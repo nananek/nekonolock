@@ -2,7 +2,8 @@
 # Phase 1 spike: ext-session-lock-v1 で全出力をロックできるかを VM で確認する。
 #
 # やること:
-#   1. `crates/lock` のリリースバイナリをビルドする。
+#   1. `crates/lock` のリリースバイナリを `--features insecure-test-unlock`
+#      付きでビルドする（既定ビルドはキー入力を無視するため）。
 #   2. Arch Linux のゲスト rootfs（Sway + wtype）を Docker で作る。
 #   3. QEMU に Arch のカーネルと initramfs を渡して起動する。
 #   4. ゲスト内で Sway を headless バックエンドで起動し、nekonolock が
@@ -17,7 +18,8 @@
 #   bash spike/02-ext-session-lock-vm.sh
 #
 # 環境変数:
-#   NEKONOLOCK_BIN  ビルド済みバイナリ（指定時は cargo build を省略）
+#   NEKONOLOCK_BIN  ビルド済みバイナリ（指定時は cargo build を省略。
+#                   必ず --features insecure-test-unlock 付きでビルドする）
 #   WORK            作業ディレクトリ（既定: mktemp -d）
 #   KEEP=1          終了時に WORK を残す
 #   EXTRA_CA_CERT   TLS を傍受する環境で Arch ミラーに接続するための CA PEM
@@ -38,7 +40,8 @@ echo "==> work: $work"
 if [ -n "${NEKONOLOCK_BIN:-}" ]; then
     cp "$NEKONOLOCK_BIN" "$work/overlay/usr/local/bin/nekonolock"
 else
-    cargo build --release --manifest-path "$root/Cargo.toml" -p nekonolock
+    cargo build --release --manifest-path "$root/Cargo.toml" -p nekonolock \
+        --features insecure-test-unlock
     cp "$root/target/release/nekonolock" "$work/overlay/usr/local/bin/nekonolock"
 fi
 chmod 755 "$work/overlay/usr/local/bin/nekonolock"

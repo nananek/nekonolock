@@ -264,7 +264,9 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
         終了コード 0 で終了した。ログは `locked` → `lock-surface: created
         HEADLESS-2/1` → `1280x720` → `created HEADLESS-3` → `key-pressed` →
         `unlocked` → `done`。出力の削除だけは未確認。
-        再現手順は `spike/02-ext-session-lock-vm.sh`（Docker + KVM が必要）。）
+        再現手順は `spike/02-ext-session-lock-vm.sh`（Docker + KVM が必要）。
+        この測定は `--features insecure-test-unlock` を付けた検証用ビルドで
+        行った。既定ビルドは Phase 3 までキー入力を無視する（fail-closed）。）
 - [ ] Phase 2: `crates/proto` と `crates/auth`（OpenPGP + PAM）+ テスト
 - [ ] Phase 3: `crates/lock`（単一出力 → 全出力、入力、描画）
 - [ ] Phase 4: packaging と ansible role

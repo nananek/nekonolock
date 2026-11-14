@@ -6,6 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Phase 3 で認証を実装するまでの検証用。任意キーで解除する。
+insecure-test-unlock = []
+
 [dependencies]
 anyhow.workspace = true
 smithay-client-toolkit.workspace = true

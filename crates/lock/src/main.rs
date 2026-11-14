@@ -209,6 +209,14 @@ impl App {
         }
 
         println!("key-pressed");
+
+        // Phase 3 で認証を実装するまで、既定ビルドはキー入力を無視する。
+        // Phase 1 の検証に限り `insecure-test-unlock` feature で解除を有効にする。
+        if !cfg!(feature = "insecure-test-unlock") {
+            println!("key-ignored: authentication is not implemented");
+            return;
+        }
+
         lock.unlock();
         println!("unlocked");
         // unlock_and_destroy をコンポジタへ確実に届けてから終了する。
