@@ -4,7 +4,10 @@ Sway (wlroots) 用の小さなスクリーンロッカー。YubiKey の OpenPGP 
 パスワードの両方で解除でき、scdaemon と pcscd のカード取り合いを
 構造的に起こさないことを目的とする。
 
-**状態: 設計段階（実装未着手）**
+**状態: Phase 1 完了（workspace と `ext-session-lock-v1` プロトタイプ）**
+
+認証は Phase 3 で実装する。既定ビルドはキー入力を受けても解除しない。
+Phase 1 の検証には `cargo run -p nekonolock --features insecure-test-unlock` を使う。
 
 - 設計: [docs/design.md](docs/design.md)
 - 決定と却下案: [docs/decisions.md](docs/decisions.md)

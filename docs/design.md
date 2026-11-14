@@ -257,7 +257,16 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
   - [x] `gpg --pinentry-mode loopback --passphrase-fd` でカード鍵に署名できるか
         （2026-11-14 実測: `spike/01-gpg-card-loopback.sh` で sign/verify とも OK。
         EDDSA 483DC691DF9F29327EA106BD030130E2F156CD74。この方式で実装する）
-  - [ ] Sway の `ext-session-lock-v1` で全出力ロックできるか
+  - [x] Sway 1.12 の `ext-session-lock-v1` で全出力ロックできるか
+        （2026-11-14 実測: Arch Linux + Sway 1.12（wlroots headless / pixman）の
+        VM で `crates/lock` のプロトタイプを動かした。2 出力にロックサーフェスを
+        張り、ロック中の出力追加（HEADLESS-3）にも追従し、キー入力で解除して
+        終了コード 0 で終了した。ログは `locked` → `lock-surface: created
+        HEADLESS-2/1` → `1280x720` → `created HEADLESS-3` → `key-pressed` →
+        `unlocked` → `done`。出力の削除だけは未確認。
+        再現手順は `spike/02-ext-session-lock-vm.sh`（Docker + KVM が必要）。
+        この測定は `--features insecure-test-unlock` を付けた検証用ビルドで
+        行った。既定ビルドは Phase 3 までキー入力を無視する（fail-closed）。）
 - [ ] Phase 2: `crates/proto` と `crates/auth`（OpenPGP + PAM）+ テスト
 - [ ] Phase 3: `crates/lock`（単一出力 → 全出力、入力、描画）
 - [ ] Phase 4: packaging と ansible role
@@ -271,7 +280,8 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
   **解決済み (2026-11-14)**: `spike/01-gpg-card-loopback.sh` で
   `--pinentry-mode loopback --passphrase-fd` による署名と検証が成功した。
   実装はこの方式を前提にする（Assuan 直叩きは不要）。
-- Sway 1.12 の `ext-session-lock-v1` で、ロック中の出力追加・削除の挙動。
+- Sway 1.12 の `ext-session-lock-v1` で、ロック中の出力削除の挙動。
+  2026-11-14 時点で、出力追加は追従を確認済み。削除は未確認。
 - 時計の日本語表示に CJK フォントが必要かどうか（必要なら依存を追加）。
 
 ## 15. 却下案
