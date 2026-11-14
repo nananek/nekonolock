@@ -161,7 +161,7 @@ fn systemd_listener() -> Result<Option<Listener>> {
         env::remove_var("LISTEN_PID");
         env::remove_var("LISTEN_FDS");
     }
-    Ok(Some(Listener::from_owned_fd(fd)))
+    Ok(Some(Listener::from_owned_fd(fd)?))
 }
 
 fn parse_args() -> Result<Option<Args>> {

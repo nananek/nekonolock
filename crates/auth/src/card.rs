@@ -71,7 +71,7 @@ impl CardSigner for GpgCard {
         match run_command(command, None, self.timeout.min(Duration::from_secs(10))) {
             Ok(output) if output.status.success() => {
                 let text = String::from_utf8_lossy(&output.stdout);
-                self.key.is_empty() || key_matches(&text, &self.key)
+                !self.key.is_empty() && key_matches(&text, &self.key)
             }
             _ => false,
         }
@@ -150,8 +150,11 @@ impl CardSigner for GpgCard {
         }
 
         let status = String::from_utf8_lossy(&output.stdout);
+        if has_unusable_key(&status) {
+            return Ok(false);
+        }
         match parse_validsig(&status) {
-            Some(fingerprint) => Ok(key_matches(fingerprint, &self.key)),
+            Some(fingerprint) => Ok(fingerprint_matches(fingerprint, &self.key)),
             None => Ok(false),
         }
     }
@@ -174,6 +177,43 @@ fn key_matches(candidate: &str, key: &str) -> bool {
         .collect::<String>()
         .to_ascii_uppercase();
     candidate.contains(&key)
+}
+
+/// 署名に使われた fingerprint と設定鍵を比べる。
+///
+/// 設定が 16 桁の long key ID なら fpr の末尾一致、40 桁の fingerprint なら
+/// 完全一致にする。短い鍵指定や部分一致で別鍵を受け入れない。
+fn fingerprint_matches(fingerprint: &str, key: &str) -> bool {
+    let key = normalize_key(key).to_ascii_uppercase();
+    if key.is_empty() {
+        return false;
+    }
+    let fingerprint: String = fingerprint
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if key.len() == 40 {
+        fingerprint == key
+    } else {
+        fingerprint.len() >= key.len() && fingerprint.ends_with(&key)
+    }
+}
+
+/// 失効・期限切れの鍵による署名を検出する。
+///
+/// カードは鍵の失効を知らないため、署名自体は成功する。検証側で
+/// `REVKEYSIG` / `KEYREVOKED` などを止めないと、失効済みの鍵で解除できてしまう。
+fn has_unusable_key(status_output: &str) -> bool {
+    status_output.lines().any(|line| {
+        let Some(rest) = line.strip_prefix("[GNUPG:] ") else {
+            return false;
+        };
+        matches!(
+            rest.split_whitespace().next(),
+            Some("REVKEYSIG" | "EXPKEYSIG" | "KEYREVOKED" | "KEYEXPIRED" | "SIGEXPIRED")
+        )
+    })
 }
 
 fn parse_validsig(status_output: &str) -> Option<&str> {
@@ -350,6 +390,34 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn fingerprint_matching_is_strict_for_key_ids() {
+        let fpr = "3B1F00001111222233334444030130E2F156CD74";
+        assert!(fingerprint_matches(fpr, "030130E2F156CD74"));
+        assert!(fingerprint_matches(
+            fpr,
+            "3B1F00001111222233334444030130E2F156CD74"
+        ));
+        assert!(!fingerprint_matches(fpr, "0000111122223333"));
+        assert!(!fingerprint_matches(
+            "FFFF00001111222233334444030130E2F156CD74",
+            "0000111122223333"
+        ));
+        assert!(!fingerprint_matches(fpr, "!"));
+    }
+
+    #[test]
+    fn detects_revoked_and_expired_status() {
+        assert!(has_unusable_key("[GNUPG:] REVKEYSIG 1234 audit"));
+        assert!(has_unusable_key("[GNUPG:] EXPKEYSIG 1234 audit"));
+        assert!(has_unusable_key("[GNUPG:] KEYREVOKED"));
+        assert!(has_unusable_key("[GNUPG:] KEYEXPIRED 123"));
+        assert!(has_unusable_key("[GNUPG:] SIGEXPIRED"));
+        assert!(!has_unusable_key(
+            "[GNUPG:] GOODSIG 1234 audit\n[GNUPG:] VALIDSIG 030130E2F156CD74 2026-11-15"
+        ));
     }
 
     #[test]

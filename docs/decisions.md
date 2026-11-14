@@ -147,3 +147,18 @@
   有効化する方式にすると、配布物に解除経路が残る。`insecure-test-unlock` と
   同じくビルド時 feature に限定する。
 - 却下: 実行時フラグ — 誤って有効化でき、配布物に経路が残る。
+
+
+## ADR-0016: OpenPGP の失効・期限切れと鍵指定を厳密に扱う
+
+- 決定: `gpg --verify` の status に `REVKEYSIG` / `KEYREVOKED` / `EXPKEYSIG` /
+  `KEYEXPIRED` / `SIGEXPIRED` があれば解除しない。`[auth] key` は 16 桁の
+  long key ID か 40 桁の fingerprint（16 進）だけを許可し、照合は key ID なら
+  fingerprint の末尾一致、fingerprint なら完全一致にする。
+- 理由: OpenPGP カードは鍵の失効を知らないため、失効済みの鍵でも署名できる。
+  検証側で status を見ないと、失効したカードでロックを解除できてしまう。
+  短い key ID は衝突耐性が低く、部分一致は別の鍵を受け入れる余地を残す。
+- 却下: 暗号学的な署名検証だけに任せる — gpg の status を見ないと失効・
+  期限切れを区別できない。
+- 補足: 16 桁の long key ID は 64 bit なので、より強い識別が必要なら 40 桁の
+  fingerprint を設定する。

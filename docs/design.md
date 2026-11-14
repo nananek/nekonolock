@@ -74,6 +74,8 @@ UI は認証ロジックを持たない。UI と認証を分ける理由は次�
    （`!` は primary を固定するため必須。付けないと署名 subkey に解決され、
    別カードを要求する。）
 3. 出力した署名を `gpg --verify` で検証し、チャレンジと一致することを確認する。
+   `VALIDSIG` の fingerprint が設定鍵と一致し、`REVKEYSIG` / `KEYREVOKED` /
+   `EXPKEYSIG` / `KEYEXPIRED` / `SIGEXPIRED` が無いことを確認する。
 
 カードを持つのは scdaemon だけになるため、pcscd のセッション競合は起きない。
 `pam_pkcs11` / `opensc` / `pcsc-card-watcher` は ayaka から外す。
@@ -131,6 +133,8 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 - JSON 1 オブジェクト。`v` でバージョンを固定する。
 - 1 メッセージは 4096 byte まで。秘密は 512 byte まで。超えた要求と
   `v` の不一致は `bad-request` としてロックを維持する。
+- systemd socket activation で fd を引き取る場合も、fd が `SOCK_SEQPACKET`
+  であることを検証する。`ListenStream=` などの設定ミスをそのまま使わない。
 
 ```json
 {"v":1,"op":"status"}
@@ -179,6 +183,9 @@ service = "nekonolock"
 - `password = false` で YubiKey 必須運用にできる。
 - `openpgp = false` でパスワードのみにもできる。
 - 両方 `false` は起動時に拒否する。
+- `key` は 16 桁の long key ID か 40 桁の fingerprint（16 進）だけを許可する。
+  可能なら 40 桁の fingerprint を使う。照合は key ID なら fingerprint の
+  末尾一致、fingerprint なら完全一致にする。
 - 認証ヘルパは `[auth]` と `[pam]` だけを検証する。`[ui]` の色やフォントの
   誤りでロック解除できなくなる（fail closed のまま締め出される）のを避けるため。
   UI 側は Phase 3 で `[ui]` を検証する。
@@ -224,6 +231,9 @@ service = "nekonolock"
 - パスワードは PAM の `pam_faillock` に委ねる。
 - PIN の試行はカード側のリトライ回数が上限。UI の `max_attempts` は
   連打を抑えるだけで、PIN の自動再試行はしない。
+- OpenPGP の署名検証では、失効・期限切れの鍵（`REVKEYSIG` / `KEYREVOKED` /
+  `EXPKEYSIG` / `KEYEXPIRED` / `SIGEXPIRED`）を拒否する。カードは失効を
+  知らずに署名できるため、検証側で止める（[ADR-0016](decisions.md)）。
 - 認証成功後は、UI が lock surface を破棄して終了する。
 - ヘルパは認証結果以外を返さない（カードの詳細情報や PIN 残回数を返さない）。
 

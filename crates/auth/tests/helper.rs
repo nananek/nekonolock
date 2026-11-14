@@ -127,7 +127,7 @@ fn config(openpgp: bool, password: bool, timeout_sec: u64) -> String {
 [auth]
 openpgp = {openpgp}
 password = {password}
-key = "TESTKEY1234567890!"
+key = "0123456789ABCDEF!"
 challenge_bytes = 32
 timeout_sec = {timeout_sec}
 

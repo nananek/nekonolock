@@ -179,9 +179,22 @@ impl Config {
         }
 
         if self.auth.openpgp {
-            if self.auth.key.trim().is_empty() {
+            let key = self.auth.key.trim();
+            let key = key.trim_end_matches('!');
+            if key.is_empty() {
                 return Err(ConfigError::Invalid(
                     "[auth] openpgp = true なら key が要る".to_string(),
+                ));
+            }
+            if !key.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(ConfigError::Invalid(
+                    "[auth] key は 16 桁の long key ID か 40 桁の fingerprint（16 進）にする"
+                        .to_string(),
+                ));
+            }
+            if key.len() != 16 && key.len() != 40 {
+                return Err(ConfigError::Invalid(
+                    "[auth] key は 16 桁の long key ID か 40 桁の fingerprint にする".to_string(),
                 ));
             }
             if self.auth.key.chars().any(char::is_whitespace) {
@@ -442,6 +455,38 @@ openpgp = false
             Err(ConfigError::Parse { .. })
         ));
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn rejects_weak_or_malformed_openpgp_keys() {
+        for key in [
+            "!",
+            "!!",
+            "ABCD1234",
+            "TESTKEY1234567890",
+            "030130E2F156CD7G",
+        ] {
+            let mut config = Config::default();
+            config.auth.key = key.to_string();
+            assert!(config.validate_auth().is_err(), "key {key:?}");
+        }
+
+        for key in [
+            "030130E2F156CD74",
+            "030130E2F156CD74!",
+            "483DC691DF9F29327EA106BD030130E2F156CD74",
+            "483DC691DF9F29327EA106BD030130E2F156CD74!",
+        ] {
+            let config = AuthConfig {
+                key: key.to_string(),
+                ..AuthConfig::default()
+            };
+            let config = Config {
+                auth: config,
+                ..Config::default()
+            };
+            config.validate_auth().unwrap();
+        }
     }
 
     #[test]

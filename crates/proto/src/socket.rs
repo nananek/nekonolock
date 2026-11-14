@@ -58,6 +58,8 @@ pub enum SocketError {
     Timeout,
     #[error("ピア uid が一致しない（要求 {expected}, 実際 {actual}）")]
     WrongPeer { expected: u32, actual: u32 },
+    #[error("socket が SOCK_SEQPACKET ではない")]
+    WrongSocketType,
 }
 
 /// listen 中の socket。drop 時に自分で作ったパスを消す。
@@ -122,11 +124,16 @@ impl Listener {
 
     /// systemd socket activation など、外で作られた fd を引き取る。
     /// パスの後始末は呼び出し側（systemd）に任せる。
-    pub fn from_owned_fd(fd: OwnedFd) -> Self {
-        Self {
+    pub fn from_owned_fd(fd: OwnedFd) -> Result<Self, SocketError> {
+        // 設計は SOCK_SEQPACKET。systemd unit の ListenStream= などの設定ミスを
+        // そのまま受け入れると、1 メッセージ 1 要求の前提が崩れる。
+        if getsockopt(&fd, sockopt::SockType)? != SockType::SeqPacket {
+            return Err(SocketError::WrongSocketType);
+        }
+        Ok(Self {
             fd,
             bound_path: None,
-        }
+        })
     }
 
     /// 同じ uid の接続だけを受け付ける。他人の uid は黙って閉じる。
@@ -273,6 +280,21 @@ mod tests {
         drop(listener);
         assert!(!path.exists());
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_owned_fd_rejects_stream_socket() {
+        let fd = socket(
+            nix::sys::socket::AddressFamily::Unix,
+            SockType::Stream,
+            SockFlag::SOCK_CLOEXEC,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            Listener::from_owned_fd(fd),
+            Err(SocketError::WrongSocketType)
+        ));
     }
 
     #[test]
