@@ -4,10 +4,11 @@ Sway (wlroots) 用の小さなスクリーンロッカー。YubiKey の OpenPGP 
 パスワードの両方で解除でき、scdaemon と pcscd のカード取り合いを
 構造的に起こさないことを目的とする。
 
-**状態: Phase 2 完了（プロトコルと認証ヘルパ）**
+**状態: Phase 3 完了（ロック画面の入力・描画・認証連携）**
 
-`crates/proto` に要求・応答の型、socket、設定を、`crates/auth` に OpenPGP の
-チャレンジ署名と PAM 認証を実装した。UI 側の認証連携は Phase 3。
+`crates/lock` に `ext-session-lock-v1` の全出力ロック、モード帯・外周フレーム・
+時計・入力ドットの描画、`nekonolock-auth` への認証要求を実装した。認証が
+成功するまでロックは解除しない。
 
 ```sh
 # 単体テストと結合テスト（モックバックエンド）
@@ -16,10 +17,17 @@ cargo test -p nekonolock-auth --features mock-card,mock-pam
 
 # 手元でヘルパを起動する場合
 cargo run -p nekonolock-auth -- --config ~/.config/nekonolock/config.toml
+
+# ロック画面（別端末から Sway 上で）
+cargo run -p nekonolock
+
+# Sway headless の E2E（Docker + モック認証ヘルパ）
+bash spike/03-lock-ui-sway.sh
 ```
 
-ロック画面の既定ビルドは、Phase 3 で認証を繋ぐまでキー入力を受けても解除しない。
-Phase 1 の検証には `cargo run -p nekonolock --features insecure-test-unlock` を使う。
+ビルドには `libxkbcommon` の開発用ファイル（Arch: `libxkbcommon`、
+Debian/Ubuntu: `libxkbcommon-dev`）が要る。実行時は `[ui] font` のフォントと
+`nekonolock-auth` の socket activation を用意する。詳細は設計の Phase 3 を参照。
 
 - 設計: [docs/design.md](docs/design.md)
 - 決定と却下案: [docs/decisions.md](docs/decisions.md)

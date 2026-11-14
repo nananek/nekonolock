@@ -121,6 +121,15 @@ impl Config {
         Ok(config)
     }
 
+    /// UI 用。`[ui]` だけを検証し、`[auth]` の意味的な誤り（両方 `false`、
+    /// 鍵の書式違いなど）でロック画面が起動できなくなることを避ける。
+    /// 型の誤りや未知の項目は `Config` 全体の解釈で弾く。
+    pub fn load_ui(path: Option<&Path>) -> Result<Self, ConfigError> {
+        let config = Self::load_unchecked(path)?;
+        config.validate_ui()?;
+        Ok(config)
+    }
+
     /// 認証ヘルパ用。`[auth]` と `[pam]` だけを検証し、`[ui]` の誤りで
     /// ロック解除できなくなることを避ける。`[ui]` は解釈もしない。
     pub fn load_auth(path: Option<&Path>) -> Result<Self, ConfigError> {
@@ -415,6 +424,46 @@ service = "nekonolock-test"
         let mut config = Config::default();
         config.auth.key = "  ".to_string();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn ui_loading_ignores_semantically_broken_auth_settings() {
+        let path = temp_config(
+            r##"
+[ui]
+background = "#101010"
+
+[auth]
+openpgp = false
+password = false
+key = "not-a-key"
+"##,
+        );
+        assert!(matches!(
+            Config::load(Some(&path)),
+            Err(ConfigError::Invalid(_))
+        ));
+
+        let config = Config::load_ui(Some(&path)).unwrap();
+        assert_eq!(config.ui.background, "#101010");
+        assert!(!config.auth.openpgp);
+        assert!(!config.auth.password);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn ui_loading_still_rejects_broken_ui_settings() {
+        let path = temp_config(
+            r##"
+[ui]
+background = "blue"
+"##,
+        );
+        assert!(matches!(
+            Config::load_ui(Some(&path)),
+            Err(ConfigError::Invalid(_))
+        ));
+        fs::remove_file(&path).ok();
     }
 
     #[test]

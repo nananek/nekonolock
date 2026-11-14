@@ -15,4 +15,4 @@ pub use protocol::{
     AuthKind, AuthMethod, MAX_MESSAGE_BYTES, MAX_SECRET_BYTES, PROTOCOL_VERSION, Reason, Request,
     RequestBody, Response, ResponseBody, Secret,
 };
-pub use socket::{Connection, Listener, SocketError, default_socket_path};
+pub use socket::{Connection, Listener, SocketError, connect, default_socket_path};
