@@ -1,0 +1,93 @@
+# 決定と却下案
+
+設計上の決定を、理由と却下した案つきで記録する。実装中に判断を変えたら
+このファイルに追記する（過去の記述は消さない）。
+
+## ADR-0001: 実装言語は Rust
+
+- 決定: Rust（edition 2024、`rustc` 1.99 で確認）。
+- 理由: Wayland クライアント（`smithay-client-toolkit`）、PAM、Unix socket の
+  いずれも実績のある crate がある。UI とロック解除を扱うコードで
+  メモリ安全性を確保したい。
+- 却下: C / C++ — 依存は減るが、入力処理とバッファ管理のリスクが大きい。
+- 却下: Go — PAM と Wayland の binding が cgo 前提になり、静的バイナリの
+  利点が消える。
+
+## ADR-0002: ロック画面は自前実装する
+
+- 決定: `nekonolock`（自前 UI）+ `nekonolock-auth`（認証ヘルパ）の 2 プロセス。
+- 理由: 現行 hyprlock は Hyprland 向けで、Sway 上では PAM に渡す入力が
+  壊れる（正しいパスワードでも `pam_unix` が失敗する）。UI を小さく自前で持ち、
+  認証を分離すれば、どちらに問題があるか切り分けられる。
+- 却下: swaylock + 自前 PAM モジュール — UI は堅いが、認証以外の不満
+  （表示・モード切替・失敗時の挙動）を制御できない。工数は小さいので、
+  行き詰まったときの退避先としては残す。
+
+## ADR-0003: YubiKey 認証は OpenPGP applet に一本化する
+
+- 決定: scdaemon 経由のチャレンジ署名で解除する。PIV / pam_pkcs11 /
+  opensc / pcsc-card-watcher は ayaka から外す。
+- 理由: 競合の原因は「PC/SC リーダを握るクライアントが 2 系統ある」こと。
+  認証を scdaemon 側に寄せれば、カードを持つプロセスが 1 つになり、
+  競合が構造的に消える。SSH 署名・git commit 署名と同じ経路になる。
+- 却下: PIV + リースブローカー — 現行の PIV 証明書は維持できるが、
+  排他デーモンを別途作る必要があり、scdaemon 側の挙動は結局ブラックボックス。
+- 却下: `pcsc-shared` — 2026-05-13 の実測で不採用。pcscd の同時接続で
+  scdaemon が不安定になる。
+
+## ADR-0004: 認証は別プロセスに分離し、Unix socket で受ける
+
+- 決定: UI は秘密を受け取ってヘルパに渡すだけ。認証判定は
+  `nekonolock-auth` が行う。
+- 理由: 認証だけを CLI から検証できる。UI のクラッシュが認証状態を壊さない。
+  将来 sudo 用 PAM モジュールから同じロジックを再利用できる。
+- 却下: 単一バイナリで PAM / gpg を直接呼ぶ — テストしづらく、
+  UI の再起動で認証状態（試行回数など）が消える。
+
+## ADR-0005: `ext-session-lock-v1` を使う
+
+- 決定: `ext_session_lock_manager_v1` でロックする。
+- 理由: Sway 1.12 が対応している。コンポジタが他クライアントの描画を止めるため、
+  layer-shell を全面に重ねる方式より確実。
+- 却下: `zwlr_layer_shell_v1` のみで全面を覆う — 通知や他 surface が
+  上に出る余地があり、ロックとして弱い。
+
+## ADR-0006: パスワード解除は既定で有効、設定で無効化できる
+
+- 決定: `[auth] password = true` を既定。`false` で YubiKey 必須にできる。
+- 理由: YubiKey を挿し忘れたときの締め出しを避ける。一方で、
+  持ち出し端末では PIN のみにしたいという要求もある。
+- 補足: 両方 `false` は起動時に拒否する。
+
+## ADR-0007: 描画は CPU（wl_shm + fontdue）、GPU は使わない
+
+- 決定: `wl_shm` のバッファに直接描画する。フォントは `fontdue`。
+- 理由: 表示するのは時計・入力ドット・短いメッセージだけ。GPU 文脈を作ると
+  ドライバ依存が増える（ayaka の AMD / inspiron の Intel で挙動を揃えたい）。
+- 却下: `cosmic-text` — シェーピングまで面倒を見るが、今の表示内容には過剰。
+- 却下: `tiny-skia` — 角丸矩形のために依存を増やす必要がない。
+  矩形とグリフの合成は自前で足りる。
+
+## ADR-0008: アイドル検出は当面 swayidle を維持する
+
+- 決定: 自動ロックのトリガは既存の `swayidle` をそのまま使い、`lock` と
+  `timeout` の実行先だけ `nekonolock` に差し替える。
+- 理由: ロック画面の実装とアイドル検出を同時に変えると、切り分けが難しくなる。
+  Sway 1.12 の `ext-idle-notify-v1` 対応を確認できたら、自前タイマーへの
+  置き換えを別 phase で検討する。
+- 却下: 最初から自前のアイドル管理 — スコープが広がる。
+
+## ADR-0009: 配布は pacman package + ansible role
+
+- 決定: バイナリは [nekono] repo の package `nekonolock`。systemd-user unit と
+  PAM ファイルは ansible role。ユーザー設定は dotfiles。
+- 理由: ansible-nekonodesk の既存の分担（package / systemd system・user unit は
+  ansible、`~/.config` は dotfiles）に合わせる。
+- 却下: dotfiles にバイナリを置く — ビルド成果物を git 管理したくない。
+
+## ADR-0010: sudo の YubiKey 認証は今回のスコープ外
+
+- 決定: PIV を外すのに合わせて、sudo はパスワード認証へ戻す。
+- 理由: sudo と lock で同じ PAM 経路を共有すると、切り分けが再び難しくなる。
+  まずロック画面を安定させる。
+- 将来: ヘルパを PAM モジュールから呼ぶ形で追加できる（Phase 7）。
