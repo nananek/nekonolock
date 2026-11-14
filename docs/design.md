@@ -117,6 +117,8 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 - 認証失敗はロックを維持する（fail closed）。失敗回数と最終メッセージを UI に出す。
 - ヘルパに接続できない場合は「認証ヘルパに接続できない」を表示し、ロックは維持。
   ヘルパは socket activation で再起動させる。
+- ヘルパは要求の読み取りに `timeout_sec` を使う。時間内に要求が来なければ
+  応答せず接続を閉じる（UI は接続失敗として扱う）。
 - カードが抜けた場合はその旨を表示し、`password` が有効ならパスワードへ誘導する。
 - 秘密（PIN / パスワード）はログに出さない。受信バッファは使用後に zeroize する。
 
@@ -127,6 +129,8 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
   （加えて `SO_PEERCRED` で uid を検証する）。
 - 1 接続 1 要求。応答後にヘルパ側から close する。
 - JSON 1 オブジェクト。`v` でバージョンを固定する。
+- 1 メッセージは 4096 byte まで。秘密は 512 byte まで。超えた要求と
+  `v` の不一致は `bad-request` としてロックを維持する。
 
 ```json
 {"v":1,"op":"status"}
@@ -175,6 +179,9 @@ service = "nekonolock"
 - `password = false` で YubiKey 必須運用にできる。
 - `openpgp = false` でパスワードのみにもできる。
 - 両方 `false` は起動時に拒否する。
+- 認証ヘルパは `[auth]` と `[pam]` だけを検証する。`[ui]` の色やフォントの
+  誤りでロック解除できなくなる（fail closed のまま締め出される）のを避けるため。
+  UI 側は Phase 3 で `[ui]` を検証する。
 
 ## 8. Wayland 実装方針
 
@@ -192,7 +199,9 @@ service = "nekonolock"
 - フォントは `fontdue` でラスタライズする。シェーピングは不要（ASCII + 数字）。
   CJK を出す予定はないが、時計の曜日を日本語にする場合は設定でフォントを差し替える。
 - 依存は `smithay-client-toolkit`、`wayland-client`、`wayland-protocols`、
-  `memmap2`、`fontdue`、`serde` / `serde_json`、`toml`、`nix`、`pam-client`。
+  `memmap2`、`fontdue`、`serde` / `serde_json`、`toml`、`nix`、`zeroize`。
+  認証ヘルパは PAM を `libloading` で `dlopen` し、乱数は `getrandom`、
+  gpg 用の一時ファイルは `tempfile` を使う（[ADR-0013](decisions.md)）。
 
 ## 9. カード排他の解消
 
@@ -224,13 +233,17 @@ service = "nekonolock"
   （署名器はモック）。
 - 統合: ヘルパを feature flag でモック PAM / モックカードにして、要求の受理・拒否、
   `kind` の不整合、タイムアウトを検証する。
-- E2E: ayaka 実機で手動チェックリスト。
+  `crates/auth/tests/helper.rs` は実際にバイナリを起動して socket 越しに確認する。
+- E2E: ayaka 実機で手動チェックリスト（Phase 5）。
   - YubiKey 挿入 → PIN で解除
   - YubiKey 抜去 → パスワードで解除
   - パスワード無効設定で PIN のみ
   - 誤 PIN 2 回 → 正しい PIN で解除できる（リトライを消費しない経路の確認）
   - ロック中に SSH 署名を走らせても解除できる（scdaemon 競合の回帰確認）
 - CI: `cargo fmt --check`、`cargo clippy -- -D warnings`、`cargo test`。
+  モックを使う結合テストは `mock-card,mock-pam` を付けて別に実行する。
+  モック feature を付けた release ビルドは `compile_error!` で拒否する
+  （[ADR-0015](decisions.md)）。
 
 ## 12. 配布
 
@@ -267,7 +280,11 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
         再現手順は `spike/02-ext-session-lock-vm.sh`（Docker + KVM が必要）。
         この測定は `--features insecure-test-unlock` を付けた検証用ビルドで
         行った。既定ビルドは Phase 3 までキー入力を無視する（fail-closed）。）
-- [ ] Phase 2: `crates/proto` と `crates/auth`（OpenPGP + PAM）+ テスト
+- [x] Phase 2: `crates/proto` と `crates/auth`（OpenPGP + PAM）+ テスト
+  （2026-11-15 実装。`SOCK_SEQPACKET` + JSON、peer uid 検証、0700/0600、
+  gpg の loopback 署名と VALIDSIG 検証、`libpam.so.0` の `dlopen`、
+  `mock-card` / `mock-pam` による結合テスト。gpg の署名は EDDSA の実カードで
+  Phase 1 に確認済みの方式を使う。PAM 実機の `/etc/pam.d/nekonolock` は Phase 4。）
 - [ ] Phase 3: `crates/lock`（単一出力 → 全出力、入力、描画）
 - [ ] Phase 4: packaging と ansible role
 - [ ] Phase 5: ayaka 適用（pam_pkcs11 / hyprlock 廃止、swayidle から起動）
