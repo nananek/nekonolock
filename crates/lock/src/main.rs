@@ -107,7 +107,7 @@ struct App {
     shm: Shm,
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
-    lock_surfaces: Vec<(wl_output::WlOutput, SessionLockSurface)>,
+    lock_surfaces: Vec<(wl_output::WlOutput, String, SessionLockSurface)>,
     _seat: Option<wl_seat::WlSeat>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     locked_once: bool,
@@ -120,15 +120,21 @@ impl App {
         let Some(lock) = self.session_lock.as_ref() else {
             return;
         };
+        let name = self
+            .output_state
+            .info(&output)
+            .and_then(|info| info.name)
+            .unwrap_or_else(|| "unknown".to_string());
+
         let surface = self.compositor.create_surface(qh);
         let lock_surface = lock.create_lock_surface(surface, &output, qh);
-        println!("lock-surface: created");
-        self.lock_surfaces.push((output, lock_surface));
+        println!("lock-surface: created {name}");
+        self.lock_surfaces.push((output, name, lock_surface));
     }
 
     fn remove_lock_surface(&mut self, output: &wl_output::WlOutput) {
         let before = self.lock_surfaces.len();
-        self.lock_surfaces.retain(|(o, _)| o != output);
+        self.lock_surfaces.retain(|(o, _, _)| o != output);
         if self.lock_surfaces.len() != before {
             println!("lock-surface: removed");
         }
@@ -145,6 +151,13 @@ impl App {
             return;
         }
 
+        let name = self
+            .lock_surfaces
+            .iter()
+            .find(|(_, _, lock_surface)| lock_surface.wl_surface() == surface.wl_surface())
+            .map(|(_, name, _)| name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
         if let Err(err) = self.try_draw_black(qh, surface, width, height) {
             eprintln!("描画に失敗した: {err:#}");
             self.failed = true;
@@ -152,7 +165,7 @@ impl App {
             return;
         }
 
-        println!("lock-surface: {width}x{height}");
+        println!("lock-surface: {name} {width}x{height}");
     }
 
     fn try_draw_black(
