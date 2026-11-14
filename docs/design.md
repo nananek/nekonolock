@@ -252,10 +252,12 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
 
 ## 13. ロードマップ
 
-- [ ] Phase 0: 設計（本ドキュメント）
+- [x] Phase 0: 設計（本ドキュメント）
 - [ ] Phase 1: スパイク
-  - `gpg --pinentry-mode loopback --passphrase-fd` でカード鍵に署名できるか
-  - Sway の `ext-session-lock-v1` で全出力ロックできるか
+  - [x] `gpg --pinentry-mode loopback --passphrase-fd` でカード鍵に署名できるか
+        （2026-11-14 実測: `spike/01-gpg-card-loopback.sh` で sign/verify とも OK。
+        EDDSA 483DC691DF9F29327EA106BD030130E2F156CD74。この方式で実装する）
+  - [ ] Sway の `ext-session-lock-v1` で全出力ロックできるか
 - [ ] Phase 2: `crates/proto` と `crates/auth`（OpenPGP + PAM）+ テスト
 - [ ] Phase 3: `crates/lock`（単一出力 → 全出力、入力、描画）
 - [ ] Phase 4: packaging と ansible role
@@ -265,8 +267,10 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
 
 ## 14. 未確定事項
 
-- `gpg --pinentry-mode loopback` がカード鍵の PIN を scdaemon へ正しく渡せるか。
-  不可なら gpg-agent へ Assuan で直接 `SIGKEY` / `PWD` を送る実装に切り替える。
+- ~~`gpg --pinentry-mode loopback` がカード鍵の PIN を scdaemon へ正しく渡せるか。~~
+  **解決済み (2026-11-14)**: `spike/01-gpg-card-loopback.sh` で
+  `--pinentry-mode loopback --passphrase-fd` による署名と検証が成功した。
+  実装はこの方式を前提にする（Assuan 直叩きは不要）。
 - Sway 1.12 の `ext-session-lock-v1` で、ロック中の出力追加・削除の挙動。
 - 時計の日本語表示に CJK フォントが必要かどうか（必要なら依存を追加）。
 
