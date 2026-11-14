@@ -94,10 +94,23 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 `kind` をそのまま尊重する。
 
 - 既定モード: 対象カードが挿さっていれば `pin`、無ければ `password`。
-- UI 上で `Tab` により `pin` / `password` を切り替える。現在のモードは画面に出す。
+- UI 上で `Tab` により `pin` / `password` を切り替える。
 - 設定で片方を無効化できる。両方無効は起動時にエラーにする。
 - ヘルパは `kind` と設定の不整合（例: `password` 無効なのに `password` 要求）を
   拒否する。
+
+**モード表示は「誤入力防止の主要 UI」として扱う。** 取り違えると
+パスワードが PIN として送られ、カードのリトライ回数を消費するため、
+控えめなインジケータでは不十分。
+
+- 画面の外周に 12 px の枠を引き、モード色で塗る。
+- 画面上部に高さ 20% 程度の帯を敷き、モード名を大きく出す。
+  - `pin`: 藍 + 黄。ラベルは `YubiKey PIN` と「YubiKey の PIN」。
+  - `password`: 臙脂 + 白。ラベルは `Password` と「パスワード」。
+- 入力ドットもモード色に合わせる。
+- 色だけに頼らない（文字と枠の太さでも区別できる）。
+- 切替は即時反映し、入力中の文字列は破棄する（モード混在を防ぐ）。
+- 点滅・明滅はしない（眩しさと混乱を避ける）。
 
 ### 5.4 失敗時の扱い
 
@@ -135,12 +148,17 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 
 ```toml
 [ui]
-clock_format = "%Y-%m-%d (%a) %H:%M"
-font         = "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
-background   = "#000000"
-foreground   = "#eeeeee"
-dim          = "#888888"
-max_attempts = 5          # UI 側の連打抑止 (0 で無効)
+clock_format    = "%Y-%m-%d (%a) %H:%M"
+font            = "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
+background      = "#000000"
+foreground      = "#eeeeee"
+dim             = "#888888"
+max_attempts    = 5       # UI 側の連打抑止 (0 で無効)
+frame_width     = 12      # モード色フレームの太さ
+pin_accent      = "#1b2a6b"   # 藍
+pin_on_accent   = "#ffd400"   # 黄
+password_accent     = "#7a1024"  # 臙脂
+password_on_accent  = "#ffffff"
 
 [auth]
 openpgp  = true
@@ -167,6 +185,10 @@ service = "nekonolock"
 - 入力は `wl_keyboard`。IME は使わない。修飾キーは compositor のキーマップに従う。
 - 描画は `wl_shm` のバッファに CPU で書く。時計・入力ドット・メッセージだけなので
   GPU は使わない。
+- 画面構成は 3 層。外周のモード色フレーム（12 px）、上部のモード帯（高さ 20%、
+  モード名を大きく表示）、中央の時計と入力ドット。
+- モード色は `[ui] pin_accent` / `password_accent` で設定可能にする。
+  既定は pin = 藍 + 黄、password = 臙脂 + 白。
 - フォントは `fontdue` でラスタライズする。シェーピングは不要（ASCII + 数字）。
   CJK を出す予定はないが、時計の曜日を日本語にする場合は設定でフォントを差し替える。
 - 依存は `smithay-client-toolkit`、`wayland-client`、`wayland-protocols`、
