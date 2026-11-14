@@ -20,5 +20,9 @@ jobs:
         run: cargo fmt --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo clippy (auth mocks)
+        run: cargo clippy -p nekonolock-auth --all-targets --features mock-card,mock-pam -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      - name: cargo test (auth mocks)
+        run: cargo test -p nekonolock-auth --features mock-card,mock-pam
