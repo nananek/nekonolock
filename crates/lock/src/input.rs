@@ -98,6 +98,7 @@ pub enum Message {
     BadRequest,
     PinDisabled,
     PasswordDisabled,
+    ConfigError,
 }
 
 /// 入力欄と認証要求の状態。
@@ -192,6 +193,13 @@ impl UiState {
         self.busy = false;
         self.message = Message::HelperUnavailable;
         // 送信済みの秘密の写しを残さない。
+        self.clear_secret();
+    }
+
+    /// 設定を読めない。ロックは既定値で維持する。
+    pub fn config_error(&mut self) {
+        self.busy = false;
+        self.message = Message::ConfigError;
         self.clear_secret();
     }
 
@@ -347,6 +355,7 @@ impl UiState {
             Message::BadRequest => "BAD REQUEST".to_string(),
             Message::PinDisabled => "PIN DISABLED".to_string(),
             Message::PasswordDisabled => "PASSWORD DISABLED".to_string(),
+            Message::ConfigError => "CONFIG ERROR - LOCKED".to_string(),
         }
     }
 
@@ -578,6 +587,16 @@ mod tests {
         ui.helper_unavailable();
         assert_eq!(ui.secret(), "");
         assert_eq!(ui.status_line(Instant::now()), "AUTH HELPER UNAVAILABLE");
+        assert!(!ui.is_busy());
+    }
+
+    #[test]
+    fn config_error_is_reported_without_unlocking() {
+        let mut ui = state();
+        ui.push_char('x');
+        ui.config_error();
+        assert_eq!(ui.secret(), "");
+        assert_eq!(ui.status_line(Instant::now()), "CONFIG ERROR - LOCKED");
         assert!(!ui.is_busy());
     }
 }

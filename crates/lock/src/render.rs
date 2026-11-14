@@ -55,7 +55,26 @@ pub struct Theme {
     pub frame_width: u32,
 }
 
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            background: Color::rgb(0x00, 0x00, 0x00),
+            foreground: Color::rgb(0xee, 0xee, 0xee),
+            dim: Color::rgb(0x88, 0x88, 0x88),
+            pin_accent: Color::rgb(0x1b, 0x2a, 0x6b),
+            pin_on_accent: Color::rgb(0xff, 0xd4, 0x00),
+            password_accent: Color::rgb(0x7a, 0x10, 0x24),
+            password_on_accent: Color::rgb(0xff, 0xff, 0xff),
+            frame_width: 12,
+        }
+    }
+}
+
 impl Theme {
+    /// 設定を読めないときに使う既定色。ロックを先に取得するために必要。
+    pub fn fallback() -> Self {
+        Self::default()
+    }
     pub fn from_config(ui: &UiConfig) -> Result<Self, String> {
         Ok(Self {
             background: parse("background", &ui.background)?,
@@ -107,9 +126,10 @@ pub struct View<'a> {
     pub message: &'a str,
 }
 
-/// フォントを保持するレンダラ。
+/// フォントを保持するレンダラ。フォントを読めない場合はテキストを描かず、
+/// フレーム・帯・入力ドットだけでロックを維持する。
 pub struct Renderer {
-    font: Font,
+    font: Option<Font>,
 }
 
 impl Renderer {
@@ -118,7 +138,12 @@ impl Renderer {
             .map_err(|err| format!("フォントを読めない {}: {err}", path.display()))?;
         let font = Font::from_bytes(bytes, FontSettings::default())
             .map_err(|err| format!("フォントを解釈できない {}: {err}", path.display()))?;
-        Ok(Self { font })
+        Ok(Self { font: Some(font) })
+    }
+
+    /// フォント無しのフォールバック。ロックを先に取得するために使う。
+    pub fn fallback() -> Self {
+        Self { font: None }
     }
 
     /// `canvas` は `stride * height` byte 以上の ARGB8888 バッファ。
@@ -154,9 +179,23 @@ impl Renderer {
             paint_frame(canvas, stride, width, height, frame, accent);
         }
 
+        draw_dots(
+            canvas,
+            stride,
+            width,
+            height,
+            view.secret_len,
+            height * 68 / 100,
+            on_accent,
+        );
+
+        let Some(font) = &self.font else {
+            return;
+        };
+
         let mode_size = (band as f32 * 0.45).clamp(12.0, 200.0);
         draw_centered(
-            &self.font,
+            font,
             canvas,
             stride,
             width,
@@ -170,7 +209,7 @@ impl Renderer {
 
         let clock_size = ((height as f32 / 16.0).min(width as f32 / 18.0)).clamp(12.0, 96.0);
         draw_centered(
-            &self.font,
+            font,
             canvas,
             stride,
             width,
@@ -182,19 +221,9 @@ impl Renderer {
             theme.foreground,
         );
 
-        draw_dots(
-            canvas,
-            stride,
-            width,
-            height,
-            view.secret_len,
-            height * 68 / 100,
-            on_accent,
-        );
-
         let message_size = ((height as f32 / 32.0).min(width as f32 / 48.0)).clamp(10.0, 40.0);
         draw_centered(
-            &self.font,
+            font,
             canvas,
             stride,
             width,

@@ -121,11 +121,41 @@ impl Config {
         Ok(config)
     }
 
-    /// UI 用。`[ui]` だけを検証し、`[auth]` の意味的な誤り（両方 `false`、
-    /// 鍵の書式違いなど）でロック画面が起動できなくなることを避ける。
-    /// 型の誤りや未知の項目は `Config` 全体の解釈で弾く。
+    /// UI 用。`[ui]` だけを検証し、`[auth]` / `[pam]` の型・未知項目の誤りで
+    /// ロック画面が起動できなくなることを避ける。認証設定として解釈できる項目
+    /// だけを使い、読めない項目は既定値に落とす。
     pub fn load_ui(path: Option<&Path>) -> Result<Self, ConfigError> {
-        let config = Self::load_unchecked(path)?;
+        let path = resolve_path(path)?;
+        let Some(text) = read_text(&path)? else {
+            let config = Config::default();
+            config.validate_ui()?;
+            return Ok(config);
+        };
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct UiFile {
+            #[serde(default)]
+            ui: UiConfig,
+            #[serde(default)]
+            auth: Option<toml::Value>,
+            #[serde(default)]
+            pam: Option<toml::Value>,
+        }
+
+        let file: UiFile =
+            toml::from_str(&text).map_err(|source| ConfigError::Parse { path, source })?;
+        let config = Config {
+            ui: file.ui,
+            auth: file
+                .auth
+                .and_then(|value| value.try_into::<AuthConfig>().ok())
+                .unwrap_or_default(),
+            pam: file
+                .pam
+                .and_then(|value| value.try_into::<PamConfig>().ok())
+                .unwrap_or_default(),
+        };
         config.validate_ui()?;
         Ok(config)
     }
@@ -448,6 +478,25 @@ key = "not-a-key"
         assert_eq!(config.ui.background, "#101010");
         assert!(!config.auth.openpgp);
         assert!(!config.auth.password);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn ui_loading_ignores_unparseable_auth_settings() {
+        let path = temp_config(
+            r##"
+[ui]
+background = "#101010"
+
+[auth]
+openpgp = true
+password = true
+timeout_sec = "sixty"
+"##,
+        );
+        let config = Config::load_ui(Some(&path)).unwrap();
+        assert_eq!(config.ui.background, "#101010");
+        assert_eq!(config.auth.timeout_sec, AuthConfig::default().timeout_sec);
         fs::remove_file(&path).ok();
     }
 

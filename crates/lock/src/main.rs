@@ -26,7 +26,7 @@ use nekonolock::auth::{self, Outcome};
 use nekonolock::clock;
 use nekonolock::input::UiState;
 use nekonolock::render::{Renderer, Theme, View};
-use nekonolock_proto::{Config, default_socket_path};
+use nekonolock_proto::{AuthConfig, Config, UiConfig, default_socket_path};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     output::{OutputHandler, OutputState},
@@ -64,22 +64,6 @@ fn run() -> Result<()> {
         return Ok(());
     };
 
-    let config = Config::load_ui(args.config.as_deref()).context("設定を読み込めない")?;
-    if !clock::validate_format(&config.ui.clock_format) {
-        bail!(
-            "設定が不正: [ui] clock_format を解釈できない: {}",
-            config.ui.clock_format
-        );
-    }
-    let theme =
-        Theme::from_config(&config.ui).map_err(|err| anyhow::anyhow!("設定が不正: {err}"))?;
-    let renderer = Renderer::load(Path::new(&config.ui.font))
-        .map_err(|err| anyhow::anyhow!("ロック画面を描けない: {err}"))?;
-    let socket = env::var_os("NEKONOLOCK_SOCKET")
-        .map(PathBuf::from)
-        .unwrap_or(default_socket_path()?);
-    let auth_timeout = Duration::from_secs(config.auth.timeout_sec.clamp(1, 600));
-
     let conn =
         Connection::connect_to_env().context("Wayland に接続できない（WAYLAND_DISPLAY を確認）")?;
     let (globals, event_queue) = registry_queue_init(&conn)?;
@@ -94,8 +78,9 @@ fn run() -> Result<()> {
     let seat_state = SeatState::new(&globals, &qh);
     let session_lock_state = SessionLockState::new(&globals, &qh);
 
-    let clock_text = clock::format_now(&config.ui.clock_format);
-    let status_line = String::new();
+    let default_ui = UiConfig::default();
+    let default_clock_format = default_ui.clock_format.clone();
+    let clock_text = clock::format_now(&default_clock_format);
 
     let mut app = App {
         conn: conn.clone(),
@@ -105,12 +90,13 @@ fn run() -> Result<()> {
         shm,
         seat_state,
         session_lock_state,
-        renderer,
-        theme,
-        ui: UiState::new(&config.ui, &config.auth),
-        socket,
-        status_timeout: STATUS_TIMEOUT.min(auth_timeout),
-        auth_timeout,
+        renderer: Renderer::fallback(),
+        theme: Theme::fallback(),
+        ui: UiState::new(&default_ui, &AuthConfig::default()),
+        config_path: args.config,
+        socket: None,
+        status_timeout: STATUS_TIMEOUT,
+        auth_timeout: Duration::from_secs(60),
         session_lock: None,
         surfaces: Vec::new(),
         keyboard: None,
@@ -118,9 +104,9 @@ fn run() -> Result<()> {
         repeat_info: RepeatInfo::Disable,
         repeat: None,
         pending: None,
-        clock_format: config.ui.clock_format.clone(),
+        clock_format: default_clock_format,
         clock_text,
-        status_line,
+        status_line: String::new(),
         dirty: true,
         locked_once: false,
         unlocked: false,
@@ -133,11 +119,36 @@ fn run() -> Result<()> {
             .lock(&qh)
             .context("ext-session-lock-v1 を開始できない（コンポジタ非対応？）")?,
     );
-    app.queue_status();
 
     WaylandSource::new(conn, event_queue)
         .insert(event_loop.handle())
         .context("Wayland の event source を登録できない")?;
+
+    // 設定・フォントの読み込みより先に、フォールバック描画でロックを成立させる。
+    // 読み込みが遅い/失敗しても画面が覆われない状態を作らない。
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !app.exit && app.aborted.is_none() && !app.painted() && Instant::now() < deadline {
+        match event_loop.dispatch(Duration::from_millis(100), &mut app) {
+            Ok(()) => {}
+            Err(err) => {
+                app.aborted = Some(format!("Wayland のイベント処理に失敗した: {err}"));
+                break;
+            }
+        }
+        app.poll_pending();
+        let now = Instant::now();
+        if app.tick(now) {
+            app.dirty = true;
+        }
+        if app.dirty {
+            app.redraw_all();
+            app.dirty = false;
+        }
+    }
+
+    if !app.exit && app.aborted.is_none() {
+        app.load_runtime_config();
+    }
 
     while !app.exit {
         match event_loop.dispatch(TICK, &mut app) {
@@ -189,7 +200,8 @@ struct App {
     renderer: Renderer,
     theme: Theme,
     ui: UiState,
-    socket: PathBuf,
+    config_path: Option<PathBuf>,
+    socket: Option<PathBuf>,
     status_timeout: Duration,
     auth_timeout: Duration,
     session_lock: Option<SessionLock>,
@@ -229,14 +241,83 @@ struct Repeat {
 }
 
 impl App {
+    /// フォールバック描画で少なくとも 1 つのロックサーフェスが塗れたか。
+    fn painted(&self) -> bool {
+        self.surfaces
+            .iter()
+            .any(|surface| surface.size.0 > 0 && surface.size.1 > 0 && surface.pool.is_some())
+    }
+
+    /// ロック取得後に設定とフォントを読む。失敗しても既定値でロックを維持する。
+    fn load_runtime_config(&mut self) {
+        let mut config_error = false;
+        let config = match Config::load_ui(self.config_path.as_deref()) {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("nekonolock: 設定を読み込めない（既定値でロックを維持）: {err:#}");
+                config_error = true;
+                Config::default()
+            }
+        };
+
+        if clock::validate_format(&config.ui.clock_format) {
+            self.clock_format = config.ui.clock_format.clone();
+        } else {
+            eprintln!(
+                "nekonolock: [ui] clock_format を解釈できない（既定値を使う）: {}",
+                config.ui.clock_format
+            );
+        }
+
+        match Theme::from_config(&config.ui) {
+            Ok(theme) => self.theme = theme,
+            Err(err) => eprintln!("nekonolock: 表示色を読めない（既定値を使う）: {err}"),
+        }
+
+        self.ui = UiState::new(&config.ui, &config.auth);
+        if config_error {
+            self.ui.config_error();
+        }
+        self.auth_timeout = Duration::from_secs(config.auth.timeout_sec.clamp(1, 600));
+        self.status_timeout = STATUS_TIMEOUT.min(self.auth_timeout);
+        self.clock_text = clock::format_now(&self.clock_format);
+        self.load_socket();
+
+        match Renderer::load(Path::new(&config.ui.font)) {
+            Ok(renderer) => self.renderer = renderer,
+            Err(err) => {
+                eprintln!("nekonolock: フォントを読めない（文字なしでロックを維持）: {err}")
+            }
+        }
+
+        self.dirty = true;
+        if !self.exit {
+            self.queue_status();
+        }
+    }
+
+    fn load_socket(&mut self) {
+        let socket = env::var_os("NEKONOLOCK_SOCKET")
+            .map(PathBuf::from)
+            .or_else(|| default_socket_path().ok());
+        if socket.is_none() {
+            eprintln!("nekonolock: socket のパスを決められない（XDG_RUNTIME_DIR を確認）");
+        }
+        self.socket = socket;
+    }
+
     fn queue_status(&mut self) {
+        let Some(socket) = self.socket.clone() else {
+            self.ui.helper_unavailable();
+            self.dirty = true;
+            return;
+        };
         if self.pending.is_some() || self.ui.is_busy() {
             return;
         }
         self.ui.begin_status();
         self.dirty = true;
 
-        let socket = self.socket.clone();
         let timeout = self.status_timeout;
         let (tx, rx) = mpsc::channel();
         let spawned = thread::Builder::new()
@@ -254,6 +335,11 @@ impl App {
     }
 
     fn submit(&mut self) {
+        let Some(socket) = self.socket.clone() else {
+            self.ui.helper_unavailable();
+            self.dirty = true;
+            return;
+        };
         if self.pending.is_some() {
             return;
         }
@@ -263,7 +349,6 @@ impl App {
         };
         self.dirty = true;
 
-        let socket = self.socket.clone();
         let timeout = self.auth_timeout;
         let (tx, rx) = mpsc::channel();
         let spawned = thread::Builder::new()
@@ -316,6 +401,8 @@ impl App {
 
     fn unlock_and_exit(&mut self) {
         self.unlocked = true;
+        // 成功経路でも入力欄の秘密を残さない（設計 §5.4）。
+        self.ui.clear_secret();
         if let Some(lock) = self.session_lock.take() {
             lock.unlock();
             // unlock をコンポジタへ確実に届けてから終了する。
@@ -558,6 +645,7 @@ impl SessionLockHandler for App {
         _session_lock: SessionLock,
     ) {
         self.session_lock = None;
+        self.ui.clear_secret();
         if !self.unlocked {
             self.aborted = Some("コンポジタ側でロックが終了した".to_string());
         }

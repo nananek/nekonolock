@@ -118,8 +118,9 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 
 既定フォント（DejaVuSansMono）は ASCII のみなので、帯とメッセージは英語で出す。
 日本語を出す場合は `[ui] font` を CJK 対応フォントへ差し替える。
-フォントを読めない場合は、モード表示を保証できないため起動時にエラーにして
-ロックを開始しない（Phase 4 の package で `ttf-dejavu` を依存に入れる）。
+フォントを読めない場合は、ロックを先に取得したうえでテキストなしのフレームと
+モード帯でロックを維持する（[ADR-0018](decisions.md)）。Phase 4 の package で
+`ttf-dejavu` を依存に入れる。
 
 ### 5.4 失敗時の扱い
 
@@ -207,15 +208,18 @@ service = "nekonolock"
   末尾一致、fingerprint なら完全一致にする。
 - 認証ヘルパは `[auth]` と `[pam]` だけを検証する。`[ui]` の色やフォントの
   誤りでロック解除できなくなる（fail closed のまま締め出される）のを避けるため。
-  UI 側は `[ui]` だけを検証し、`[auth]` の意味的な誤りでロック画面自体が
-  起動しない（画面が覆われない）ことを避ける。型の誤りと未知の項目は
-  両方が拒否する。
+  UI は `[ui]` を独立に解釈し、`[auth]` / `[pam]` の型・未知項目の誤りは
+  既定値に落としてロックを維持する。トップレベルの未知の項目は両方が拒否する。
 
 ## 8. Wayland 実装方針
 
 - `ext_session_lock_manager_v1`（Sway 1.12 で確認済み）を使う。
   コンポジタが他クライアントの描画を止めるため、layer-shell の重ね合わせで
   代用するより確実。
+- Wayland に接続したら、設定・フォント・socket パスを読む前に `lock()` を呼ぶ。
+  その後 2 秒だけフォールバック描画でサーフェスを出し、設定とフォントを読む。
+  読み込みに失敗しても既定値とテキストなし描画でロックを維持する
+  （[ADR-0018](decisions.md)）。
 - 全出力に `ext_session_lock_surface_v1` を張る。`wl_output` の追加・削除に追従する。
 - 入力は `wl_keyboard`。IME は使わない。修飾キーは compositor のキーマップに従う。
   `smithay-client-toolkit` の `xkbcommon` feature を使い、キーリピートは UI の
@@ -337,6 +341,8 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
   追従、`wl_keyboard` + xkbcommon の入力、外周フレーム / 20% モード帯 / 時計 /
   入力ドット / メッセージの CPU 描画、`nekonolock-auth` への status / unlock
   要求（別スレッド）、失敗時のロック維持。`insecure-test-unlock` は削除した。
+  設定・フォントの読み込みより先にロックを取得し、読み込み失敗時はフォールバック
+  描画でロックを維持する。
   Sway 1.12 headless（pixman）で 2 出力、出力追加・削除、誤 PIN 後の維持、
   正しい PIN / パスワードでの解除を確認。UI の自動テストは
   `cargo test --workspace`。再現手順は `spike/03-lock-ui-sway.sh`
