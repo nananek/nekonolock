@@ -4,14 +4,14 @@
 # やること:
 #   1. `crates/lock` のリリースバイナリを `--features insecure-test-unlock`
 #      付きでビルドする（既定ビルドはキー入力を無視するため）。
-#   2. Arch Linux のゲスト rootfs（Sway + wtype）を Docker で作る。
+#   2. Arch Linux のゲスト rootfs（Sway + wkey）を Docker で作る。
 #   3. QEMU に Arch のカーネルと initramfs を渡して起動する。
 #   4. ゲスト内で Sway を headless バックエンドで起動し、nekonolock が
 #      2 出力をロックし、出力追加に追従し、キー入力で解除することを確認する。
 #
 # 前提:
 #   - Docker（rootless 可）と /dev/kvm
-#   - cargo（NEKONOLOCK_BIN を指定した場合は不要）
+#   - cargo（NEKONOLOCK_BIN と WKEY_BIN を指定した場合は不要）
 #   - Arch ミラーへ接続できるネットワーク
 #
 # 使い方:
@@ -20,6 +20,8 @@
 # 環境変数:
 #   NEKONOLOCK_BIN  ビルド済みバイナリ（指定時は cargo build を省略。
 #                   必ず --features insecure-test-unlock 付きでビルドする）
+#   WKEY_BIN        ビルド済みの virtual keyboard ヘルパ（省略時は spike/wkey を
+#                   ビルドする）
 #   WORK            作業ディレクトリ（既定: mktemp -d）
 #   KEEP=1          終了時に WORK を残す
 #   EXTRA_CA_CERT   TLS を傍受する環境で Arch ミラーに接続するための CA PEM
@@ -45,6 +47,16 @@ else
     cp "$root/target/release/nekonolock" "$work/overlay/usr/local/bin/nekonolock"
 fi
 chmod 755 "$work/overlay/usr/local/bin/nekonolock"
+
+# 1b. virtual keyboard ヘルパ（wtype はキー送出が競合するため使わない）
+wkey=${WKEY_BIN:-}
+if [ -z "$wkey" ] || [ ! -x "$wkey" ]; then
+    CARGO_TARGET_DIR="$work/wkey-target" cargo build --release \
+        --manifest-path "$root/spike/wkey/Cargo.toml"
+    wkey="$work/wkey-target/release/wkey"
+fi
+cp "$wkey" "$work/overlay/usr/local/bin/wkey"
+chmod 755 "$work/overlay/usr/local/bin/wkey"
 
 # 2. ベースイメージ（CA を足す場合だけ派生させる）
 base_image=archlinux:latest
@@ -154,11 +166,25 @@ else
     fail=1
 fi
 
-# キー入力で解除されるか。Sway の virtual-keyboard を使う。
-for _ in $(seq 1 20); do
-    wtype -k a >/tmp/wtype.log 2>&1 && break
-    sleep 0.2
-done
+# キー入力で解除されるか。virtual keyboard を作って 300 ms 待ってから
+# キーを送るヘルパを使う（wtype はキー送出がクライアントの wl_keyboard
+# 作成と競合して落ちることがある）。
+key_ok=1
+if ! xkbcli compile-keymap --layout us >/tmp/wkey.xkb 2>/tmp/xkbcli.log; then
+    note "FAIL key: xkbcli"
+    cat /tmp/xkbcli.log
+    key_ok=0
+    fail=1
+fi
+if [ "$key_ok" -eq 1 ]; then
+    /usr/local/bin/wkey /tmp/wkey.xkb >/tmp/wkey.log 2>&1
+    wkey_rc=$?
+    if [ "$wkey_rc" -ne 0 ]; then
+        note "FAIL key: wkey rc=$wkey_rc"
+        cat /tmp/wkey.log
+        fail=1
+    fi
+fi
 for _ in $(seq 1 50); do
     kill -0 "$lock_pid" 2>/dev/null || break
     sleep 0.1
