@@ -68,8 +68,9 @@ fi
 # 3. 設定
 cat >"$work/config-both.toml" <<'EOF'
 [ui]
-clock_format = "%Y-%m-%d (%a) %H:%M"
-font = "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
+clock_format = "%H:%M"
+font = "/usr/share/fonts/TTF/DejaVuSans.ttf"
+clock_font = "/usr/share/fonts/TTF/DejaVuSans-ExtraLight.ttf"
 max_attempts = 5
 
 [auth]
@@ -85,7 +86,8 @@ EOF
 
 cat >"$work/config-pin-only.toml" <<'EOF'
 [ui]
-font = "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
+font = "/usr/share/fonts/TTF/DejaVuSans.ttf"
+clock_font = "/usr/share/fonts/TTF/DejaVuSans-ExtraLight.ttf"
 max_attempts = 5
 
 [auth]

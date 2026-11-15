@@ -37,7 +37,9 @@ mod tests {
     }
 
     #[test]
-    fn accepts_design_default() {
+    fn accepts_default_formats() {
+        assert!(validate_format("%H:%M"));
+        assert!(validate_format("%A, %-d %B %Y"));
         assert!(validate_format("%Y-%m-%d (%a) %H:%M"));
     }
 

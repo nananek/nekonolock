@@ -104,22 +104,22 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 パスワードが PIN として送られ、カードのリトライ回数を消費するため、
 控えめなインジケータでは不十分。
 
-- 画面の外周にモード色の枠を引く。太さは `pin` が `frame_width`、
-  `password` が `frame_width + 4`（既定 12 px / 16 px）。
-- 画面上部に高さ 20% 程度の帯を敷き、モード名を大きく出す。
-  - `pin`: 藍 + 黄。ラベルは `YubiKey PIN`。
-  - `password`: 臙脂 + 白。ラベルは `Password`。
-- 入力ドットはモードの `on_accent` 色（既定は黄 / 白）にする。背景の黒に
-  対してコントラストを確保するため、暗い `accent` は使わない。
-- 色だけに頼らない（文字と枠の太さでも区別できる）。
+- 画面上端にモード色の細い accent line を引く。
+- 日付の下にモード capsule（丸い pill）を出す。モード色のドットと
+  `YubiKey PIN` / `Password` のラベルを置く。
+- 入力欄の枠と入力ドットもモード色にする。
+- 色だけに頼らない（ラベル・ドット・枠の 3 点で区別できる）。
 - 切替は即時反映し、入力中の文字列は破棄する（モード混乱を防ぐ）。
 - 点滅・明滅はしない（眩しさと混乱を避ける）。
 
-既定フォント（DejaVuSansMono）は ASCII のみなので、帯とメッセージは英語で出す。
+既定テーマは濃いチャコールの **Ink**。明るい **Paper** は同じ UI の色違いで、
+`[ui]` の色と `clock_font` を差し替えて使う（§7）。時計は
+`DejaVuSans-ExtraLight`、本文は `DejaVuSans`、Paper の時計は `DejaVuSerif` を
+既定にする。いずれも ASCII 中心なので、ラベルとメッセージは英語で出す。
 日本語を出す場合は `[ui] font` を CJK 対応フォントへ差し替える。
-フォントを読めない場合は、ロックを先に取得したうえでテキストなしのフレームと
-モード帯でロックを維持する（[ADR-0018](decisions.md)）。Phase 4 の package で
-`ttf-dejavu` を依存に入れる。
+フォントを読めない場合は、ロックを先に取得したうえでテキストなしの
+accent line・capsule・入力欄でロックを維持する（[ADR-0018](decisions.md)）。
+package は `ttf-dejavu` を依存に入れる。
 
 ### 5.4 失敗時の扱い
 
@@ -171,19 +171,25 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 
 `~/.config/nekonolock/config.toml`（dotfiles 管理）。
 
+既定（Ink テーマ）:
+
 ```toml
 [ui]
-clock_format    = "%Y-%m-%d (%a) %H:%M"
-font            = "/usr/share/fonts/TTF/DejaVuSansMono.ttf"
-background      = "#000000"
-foreground      = "#eeeeee"
-dim             = "#888888"
-max_attempts    = 5       # UI 側の連打抑止 (0 で無効)
-frame_width     = 12      # モード色フレームの太さ
-pin_accent      = "#1b2a6b"   # 藍
-pin_on_accent   = "#ffd400"   # 黄
-password_accent     = "#7a1024"  # 臙脂
-password_on_accent  = "#ffffff"
+clock_format    = "%H:%M"
+date_format     = "%A, %-d %B %Y"   # 描画時に大文字化する
+font            = "/usr/share/fonts/TTF/DejaVuSans.ttf"
+clock_font      = "/usr/share/fonts/TTF/DejaVuSans-ExtraLight.ttf"
+label           = "NEKONOLOCK"      # 左上の短いラベル。空なら描かない
+background      = "#15181B"
+background_bottom = "#0B0D0F"
+foreground      = "#F2EFE7"
+dim             = "#9B9E9C"
+faint           = "#6D7274"
+field_background = "#1B1F22"
+pin_accent      = "#8FC7B8"
+password_accent = "#E0A18D"
+max_attempts    = 5                 # UI 側の連打抑止 (0 で無効)
+blank_after_sec = 60                # 無入力で純黒にするまで (0 で無効)
 
 [auth]
 openpgp  = true
@@ -196,12 +202,31 @@ timeout_sec     = 60
 service = "nekonolock"
 ```
 
+Paper テーマにする場合は `[ui]` の色と時計フォントだけを差し替える。
+
+```toml
+[ui]
+font        = "/usr/share/fonts/TTF/DejaVuSans.ttf"
+clock_font  = "/usr/share/fonts/TTF/DejaVuSerif.ttf"
+background  = "#F8F4EC"
+background_bottom = "#EDE6DA"
+foreground  = "#1F1D1A"
+dim         = "#7B7265"
+faint       = "#A79C8C"
+field_background = "#FFFDF8"
+pin_accent  = "#2F5D62"
+password_accent = "#A34A3A"
+```
+
 - 既定は `openpgp = true` / `password = true`。
 - `password = false` で YubiKey 必須運用にできる。
 - `openpgp = false` でパスワードのみにもできる。
 - 両方 `false` は起動時に拒否する。
-- `clock_format` は空でなく `chrono` が解釈できることを起動時に確認する。
-  `max_attempts` は連打抑止のクールダウン（§5.4）。
+- `clock_format` / `date_format` は空でなく `chrono` が解釈できることを
+  起動時に確認する。`date_format` は描画時に大文字化する。
+- `blank_after_sec` はロック中の無入力時間。経過すると画面を純黒にし、キー入力で
+  戻す。`0` で無効。認証待ちの間は黒くしない。
+- `max_attempts` は連打抑止のクールダウン（§5.4）。
 - `key` は 16 桁の long key ID か 40 桁の fingerprint（16 進）だけを許可する。
   可能なら 40 桁の fingerprint を使う。照合は key ID なら fingerprint の
   末尾一致、fingerprint なら完全一致にする。
@@ -226,13 +251,22 @@ service = "nekonolock"
 - 描画は `wl_shm` のバッファに CPU で書く。時計・入力ドット・メッセージだけなので
   GPU は使わない。バッファは `slot::SlotPool` に任せ、compositor の release 後に
   再利用する。
-- 画面構成は 3 層。外周のモード色フレーム（`pin` 12 px / `password` 16 px、
-  設定可）、上部のモード帯（高さ 20%、モード名を大きく表示）、中央の時計と
-  入力ドット。
-- モード色は `[ui] pin_accent` / `password_accent` で設定可能にする。
-  既定は pin = 藍 + 黄、password = 臙脂 + 白。
-- フォントは `fontdue` でラスタライズする。シェーピングは不要（ASCII + 数字）。
+- 画面構成は上から、上端の accent line、左上ラベル / 右上 `LOCKED`、時計、
+  日付、モード capsule、入力欄、案内メッセージ、下端の操作ヒント。
+  外周フレームと上部の色帯は使わない。
+- 角丸矩形と円は SDF のカバレッジでアンチエイリアスする。テキストは
+  `fontdue` のビットマップを合成する。シェーピングは不要（ASCII + 数字）。
   CJK を出す予定はないが、時計の曜日を日本語にする場合は設定でフォントを差し替える。
+- モード色は `[ui] pin_accent` / `password_accent` で設定可能にする。
+  capsule の下地は accent を背景に 16% 混ぜて作る。
+- **HiDPI**: `ext_session_lock_surface_v1` の configure は論理サイズなので、
+  出力の `wl_output.scale`（Sway の 1.75 では 2）を掛けたバッファを確保し、
+  `wl_surface.set_buffer_scale(scale)` で論理サイズに戻す。レイアウトは
+  バッファの幅・高さに対する比率で置くため、倍率が変わっても同じ形になる。
+  fractional-scale / viewporter は使わない（整数倍で近似する）。
+- **焼き付き対策**: `blank_after_sec` の無入力で画面全体を純黒にする。
+  キー入力で UI を戻し、復帰に使った最初のキーは入力として消費する。
+  DPMS / バックライトの制御はしない。
 - 依存は `smithay-client-toolkit`（`calloop` + `xkbcommon`）、`wayland-client`、
   `wayland-protocols`、`memmap2`、`fontdue`、`chrono`、`serde` / `serde_json`、
   `toml`、`nix`、`zeroize`。
@@ -345,8 +379,8 @@ packaging/     # PKGBUILD と ansible role のステージング
   Phase 1 に確認済みの方式を使う。PAM 実機の `/etc/pam.d/nekonolock` は Phase 4。）
 - [x] Phase 3: `crates/lock`（全出力、入力、描画、認証連携）
   （2026-11-15 実装。`ext-session-lock-v1` の全出力ロックと出力追加・削除への
-  追従、`wl_keyboard` + xkbcommon の入力、外周フレーム / 20% モード帯 / 時計 /
-  入力ドット / メッセージの CPU 描画、`nekonolock-auth` への status / unlock
+  追従、`wl_keyboard` + xkbcommon の入力、accent line / モード capsule / 時計 /
+  入力欄 / メッセージの CPU 描画、`nekonolock-auth` への status / unlock
   要求（別スレッド）、失敗時のロック維持。`insecure-test-unlock` は削除した。
   設定・フォントの読み込みより先にロックを取得し、読み込み失敗時はフォールバック
   描画でロックを維持する。
@@ -360,8 +394,11 @@ packaging/     # PKGBUILD と ansible role のステージング
   `nekonolock`。role は package 導入、PAM 配置、socket の enable、
   swayidle の差し替えを行う。検証は `spike/04-package-ansible.sh`
   （Arch Linux コンテナで makepkg / pacman -U / ansible-playbook）。
-  v0.1.0 tag が無いため、PKGBUILD の source は Phase 3 の commit を pin
-  している（[ADR-0021](decisions.md)）。）
+  v0.1.0 tag 後は tag archive を pin している（[ADR-0021](decisions.md)）。）
+- [x] UI: Ink テーマ、モード capsule、HiDPI（integer buffer scale）、
+  無操作時の純黒
+  （2026-11-15。`docs/images/` の画像は
+  `cargo run -p nekonolock --example preview` で再生成する。）
 - [ ] Phase 7（任意）: sudo 用 PAM モジュール（同じヘルパを再利用）
 
 ## 14. 未確定事項
@@ -374,9 +411,9 @@ packaging/     # PKGBUILD と ansible role のステージング
   2026-11-14 時点では未確認だったが、Phase 3 で `swaymsg output HEADLESS-3
   unplug` により削除へ追従することを確認した。
 - 時計の日本語表示に CJK フォントが必要かどうか（必要なら依存を追加）。
-- HiDPI / fractional scaling。configure のサイズを 1:1 のバッファに
-  描く（`wl_surface.set_buffer_scale` は未使用）。scale 1 以外の実機では
-  未対応。
+- fractional scale (1.25 / 1.5) の厳密な対応。`wl_output.scale` の整数倍で
+  近似する（Sway の 1.75 は scale 2 で描く）。fractional-scale / viewporter は
+  使わない。
 
 ## 15. 却下案
 

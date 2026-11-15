@@ -19,37 +19,57 @@ pub struct Config {
 }
 
 /// ロック画面の見た目と操作。
+///
+/// 既定は濃いチャコールの Ink テーマ。明るい Paper テーマの例は
+/// `docs/design.md` の §7 を参照。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
+    /// 時計の時刻書式。既定は `%H:%M`。
     pub clock_format: String,
+    /// 日付の書式。描画時に大文字化する。既定は `%A, %-d %B %Y`。
+    pub date_format: String,
+    /// UI の本文フォント。
     pub font: String,
+    /// 時計のフォント。空なら `font` を使う。
+    pub clock_font: String,
+    /// 左上に出す短いラベル。空なら描かない。
+    pub label: String,
+    /// 背景の上端。`background_bottom` と組で縦グラデーションにする。
     pub background: String,
+    /// 背景の下端。
+    pub background_bottom: String,
     pub foreground: String,
     pub dim: String,
+    pub faint: String,
+    /// 入力欄の塗り。境界線はモードの accent 色を使う。
+    pub field_background: String,
+    pub pin_accent: String,
+    pub password_accent: String,
     /// UI 側の連打抑止。0 で無効。PIN の自動再試行には使わない。
     pub max_attempts: u32,
-    pub frame_width: u32,
-    pub pin_accent: String,
-    pub pin_on_accent: String,
-    pub password_accent: String,
-    pub password_on_accent: String,
+    /// ロック中の無入力で画面を純黒にするまでの秒数。0 で無効。
+    pub blank_after_sec: u64,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            clock_format: "%Y-%m-%d (%a) %H:%M".to_string(),
-            font: "/usr/share/fonts/TTF/DejaVuSansMono.ttf".to_string(),
-            background: "#000000".to_string(),
-            foreground: "#eeeeee".to_string(),
-            dim: "#888888".to_string(),
+            clock_format: "%H:%M".to_string(),
+            date_format: "%A, %-d %B %Y".to_string(),
+            font: "/usr/share/fonts/TTF/DejaVuSans.ttf".to_string(),
+            clock_font: "/usr/share/fonts/TTF/DejaVuSans-ExtraLight.ttf".to_string(),
+            label: "NEKONOLOCK".to_string(),
+            background: "#15181B".to_string(),
+            background_bottom: "#0B0D0F".to_string(),
+            foreground: "#F2EFE7".to_string(),
+            dim: "#9B9E9C".to_string(),
+            faint: "#6D7274".to_string(),
+            field_background: "#1B1F22".to_string(),
+            pin_accent: "#8FC7B8".to_string(),
+            password_accent: "#E0A18D".to_string(),
             max_attempts: 5,
-            frame_width: 12,
-            pin_accent: "#1b2a6b".to_string(),
-            pin_on_accent: "#ffd400".to_string(),
-            password_accent: "#7a1024".to_string(),
-            password_on_accent: "#ffffff".to_string(),
+            blank_after_sec: 60,
         }
     }
 }
@@ -264,7 +284,7 @@ impl Config {
         Ok(())
     }
 
-    /// ロック画面が起動時に拒否すべき設定を弾く（Phase 3 で使う）。
+    /// ロック画面が起動時に拒否すべき設定を弾く。
     pub fn validate_ui(&self) -> Result<(), ConfigError> {
         if self.ui.max_attempts > 100 {
             return Err(ConfigError::Invalid(
@@ -272,20 +292,28 @@ impl Config {
             ));
         }
 
-        if self.ui.frame_width > 128 {
+        // 24 時間を超える blank は実質無効と同じ。0 は無効として許可する。
+        if self.ui.blank_after_sec > 86_400 {
             return Err(ConfigError::Invalid(
-                "[ui] frame_width は 0..=128 にする".to_string(),
+                "[ui] blank_after_sec は 0..=86400 にする".to_string(),
+            ));
+        }
+
+        if self.ui.clock_format.trim().is_empty() || self.ui.date_format.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "[ui] clock_format と date_format を空にできない".to_string(),
             ));
         }
 
         for (name, value) in [
             ("background", &self.ui.background),
+            ("background_bottom", &self.ui.background_bottom),
             ("foreground", &self.ui.foreground),
             ("dim", &self.ui.dim),
+            ("faint", &self.ui.faint),
+            ("field_background", &self.ui.field_background),
             ("pin_accent", &self.ui.pin_accent),
-            ("pin_on_accent", &self.ui.pin_on_accent),
             ("password_accent", &self.ui.password_accent),
-            ("password_on_accent", &self.ui.password_on_accent),
         ] {
             if !is_hex_color(value) {
                 return Err(ConfigError::Invalid(format!(
@@ -375,7 +403,10 @@ mod tests {
         assert_eq!(config.auth.challenge_bytes, 32);
         assert_eq!(config.auth.timeout_sec, 60);
         assert_eq!(config.pam.service, "nekonolock");
-        assert_eq!(config.ui.frame_width, 12);
+        assert_eq!(config.ui.clock_format, "%H:%M");
+        assert_eq!(config.ui.date_format, "%A, %-d %B %Y");
+        assert_eq!(config.ui.background, "#15181B");
+        assert_eq!(config.ui.blank_after_sec, 60);
         config.validate().unwrap();
     }
 
@@ -385,9 +416,12 @@ mod tests {
             r##"
 [ui]
 clock_format = "%H:%M"
+date_format = "%Y-%m-%d"
 max_attempts = 0
-frame_width = 8
+blank_after_sec = 30
 background = "#101010"
+background_bottom = "#202020"
+label = "TEST"
 
 [auth]
 openpgp = false
@@ -406,9 +440,12 @@ service = "nekonolock-test"
         assert!(!config.auth.openpgp);
         assert!(config.auth.password);
         assert_eq!(config.ui.clock_format, "%H:%M");
+        assert_eq!(config.ui.date_format, "%Y-%m-%d");
         assert_eq!(config.ui.max_attempts, 0);
-        assert_eq!(config.ui.frame_width, 8);
+        assert_eq!(config.ui.blank_after_sec, 30);
         assert_eq!(config.ui.background, "#101010");
+        assert_eq!(config.ui.background_bottom, "#202020");
+        assert_eq!(config.ui.label, "TEST");
         assert_eq!(config.auth.challenge_bytes, 48);
         assert_eq!(config.auth.timeout_sec, 30);
         assert_eq!(config.pam.service, "nekonolock-test");
