@@ -4,8 +4,8 @@ Sway (wlroots) 用の小さなスクリーンロッカー。YubiKey の OpenPGP 
 パスワードの両方で解除でき、scdaemon と pcscd のカード取り合いを
 構造的に起こさないことを目的とする。
 
-**状態: v0.1.0 リリース済み。main は Ink テーマ、HiDPI、無操作時の純黒を
-含む次の release に向けて開発中。**
+**状態: v0.2.0 リリース済み。UI は Ink テーマ、HiDPI、無操作時の純黒に
+対応。**
 
 既定は濃いチャコールの **Ink**。明るい **Paper** は `[ui]` の色と時計フォントを
 差し替えて使う。どちらも上端の accent line、モード capsule、入力欄の枠で
