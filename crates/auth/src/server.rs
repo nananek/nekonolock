@@ -19,6 +19,8 @@ pub fn serve<C: CardSigner, P: PasswordAuthenticator>(
     timeout: Duration,
     once: bool,
 ) -> Result<()> {
+    // 1 秒ごとの status で journal を埋めないよう、同じ結果は続けて出さない。
+    let mut last_status = None;
     loop {
         let connection = match listener.accept_allowed() {
             Ok(connection) => connection,
@@ -28,7 +30,7 @@ pub fn serve<C: CardSigner, P: PasswordAuthenticator>(
             }
         };
 
-        handle_connection(&connection, engine, timeout);
+        handle_connection(&connection, engine, timeout, &mut last_status);
 
         if once {
             break;
@@ -41,6 +43,7 @@ fn handle_connection<C: CardSigner, P: PasswordAuthenticator>(
     connection: &Connection,
     engine: &Engine<C, P>,
     timeout: Duration,
+    last_status: &mut Option<String>,
 ) {
     let mut bytes = match connection.read_message(timeout) {
         Ok(bytes) => bytes,
@@ -63,7 +66,7 @@ fn handle_connection<C: CardSigner, P: PasswordAuthenticator>(
     // 受信した JSON には秘密が含まれる。応答を作ったらすぐ消す。
     bytes.zeroize();
 
-    log_response(&response);
+    log_response(&response, last_status);
 
     match serde_json::to_vec(&response) {
         Ok(json) => {
@@ -76,17 +79,24 @@ fn handle_connection<C: CardSigner, P: PasswordAuthenticator>(
 }
 
 /// 秘密を出さずに結果だけをログへ書く。
-fn log_response(response: &Response) {
+///
+/// status は定期確認で何度も同じ値が返るため、変化したときだけ書く。
+fn log_response(response: &Response, last_status: &mut Option<String>) {
     match &response.body {
         ResponseBody::Status { card, methods, .. } => {
-            eprintln!(
-                "nekonolock-auth: status card={card} methods={}",
+            let line = format!(
+                "card={card} methods={}",
                 methods
                     .iter()
                     .map(|method| method.as_str())
                     .collect::<Vec<_>>()
                     .join(",")
             );
+            if last_status.as_deref() == Some(line.as_str()) {
+                return;
+            }
+            eprintln!("nekonolock-auth: status {line}");
+            *last_status = Some(line);
         }
         ResponseBody::Unlock { method, .. } => {
             eprintln!("nekonolock-auth: unlocked method={}", method.as_str());
