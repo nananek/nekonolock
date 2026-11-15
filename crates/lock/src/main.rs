@@ -35,7 +35,7 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RepeatInfo},
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers, RepeatInfo},
     },
     session_lock::{
         SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
@@ -46,7 +46,7 @@ use smithay_client_toolkit::{
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_buffer, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
 };
 
 const TICK: Duration = Duration::from_millis(250);
@@ -957,6 +957,18 @@ impl KeyboardHandler for App {
         self.on_key(event);
     }
 
+    fn repeat_key(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: KeyEvent,
+    ) {
+        // キーリピートは tick 側の Repeat で進めるため、compositor からの
+        // repeat は使わない。
+    }
+
     fn release_key(
         &mut self,
         _conn: &Connection,
@@ -975,6 +987,7 @@ impl KeyboardHandler for App {
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         modifiers: Modifiers,
+        _raw_modifiers: RawModifiers,
         _layout: u32,
     ) {
         self.modifiers = modifiers;
@@ -1014,13 +1027,9 @@ impl Drop for App {
     }
 }
 
-smithay_client_toolkit::delegate_compositor!(App);
-smithay_client_toolkit::delegate_output!(App);
-smithay_client_toolkit::delegate_seat!(App);
-smithay_client_toolkit::delegate_keyboard!(App);
-smithay_client_toolkit::delegate_session_lock!(App);
-smithay_client_toolkit::delegate_shm!(App);
+smithay_client_toolkit::delegate_dispatch2!(App);
 smithay_client_toolkit::delegate_registry!(App);
+wayland_client::delegate_noop!(App: ignore wl_buffer::WlBuffer);
 
 fn parse_args() -> Result<Option<Args>> {
     let mut args = env::args_os();

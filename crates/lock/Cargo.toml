@@ -19,4 +19,4 @@ zeroize = "1"
 
 [dev-dependencies]
 # README / docs 用のプレビュー画像を書き出す examples/preview.rs だけが使う。
-png = "0.17"
+png = "0.18"
