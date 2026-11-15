@@ -39,7 +39,7 @@ makepkg --printsrcinfo > .SRCINFO
 （`cargo` を含む）。YubiKey を pcscd 経由で使うホストでは `pcsclite` と
 `ccid` も入れる（`optdepends`）。
 
-`source` は v0.2.0 から GitHub release tag の archive を pin している。
+`source` は v0.2.1 から GitHub release tag の archive を pin している。
 `[nekono]` repo の `pkgs/nekonolock/` も同じ tag archive と sha256 を使う。
 新しい tag を切ったら、`pkgver` を上げて次のように `sha256sums` を再計算する。
 
