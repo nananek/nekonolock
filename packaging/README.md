@@ -17,7 +17,7 @@ pacman package `nekonolock` と ansible role `nekonolock` のステージング�
 | `/etc/pam.d/nekonolock` | パスワード認証。`auth` と `account` の両方で `login` を include する |
 | `/usr/lib/systemd/user/nekonolock-auth.socket` | `SOCK_SEQPACKET` の socket activation |
 | `/usr/lib/systemd/user/nekonolock-auth.service` | 認証ヘルパ本体 |
-| `/usr/lib/security/pam_nekonolock.so` | sudo 用 PAM モジュール（Phase 7、ソースに `crates/pam` がある場合） |
+| `/usr/lib/security/pam_nekonolock.so` | sudo 用 PAM モジュール（v0.3.0 以降） |
 | `/usr/share/doc/nekonolock/sudo.toml.example` | `/etc/nekonolock/sudo.toml` の例 |
 | `/usr/share/licenses/nekonolock/LICENSE` | MIT |
 
@@ -49,12 +49,11 @@ makepkg --printsrcinfo > .SRCINFO
 `ccid` も入れる（`optdepends`）。
 
 `source` は v0.2.1 から GitHub release tag の archive を pin している。
-v0.2.1 の archive には `crates/pam` が無いため、その package には
-`pam_nekonolock.so` は入らない。`build()` / `package()` はソースに
-`crates/pam` があるときだけモジュールをビルド・配置するので、Phase 7 を
-含む tag に `pkgver` / `sha256sums` を切り替えれば自動で同梱される。
+v0.3.0 tag を切ったら `pkgver=0.3.0` にして `sha256sums` を再計算する。
+v0.3.0 以降の archive には `crates/pam` が含まれるため、`build()` /
+`package()` の条件付き処理で `pam_nekonolock.so` も同梱される。
 `[nekono]` repo の `pkgs/nekonolock/` も同じ tag archive と sha256 を使う。
-新しい tag を切ったら、`pkgver` を上げて次のように `sha256sums` を再計算する。
+tag archive の sha256 は次のように求める。
 
 ```sh
 curl -fsSL -o /tmp/nekonolock-0.3.0.tar.gz \
@@ -139,7 +138,7 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 - パスワードを無効にするホストは `[auth] password = false` にする。
 - `[pam] service` を変えた場合は、role の `nekonolock_pam_service` も合わせる。
 
-## sudo 用 PAM モジュール（Phase 7）
+## sudo 用 PAM モジュール
 
 `pam_nekonolock.so` は `/etc/pam.d/sudo` の `auth include system-auth` の
 直前に `auth sufficient pam_nekonolock.so` として入れる。カードが無い、

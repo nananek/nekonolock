@@ -3,20 +3,20 @@
 ## 1. 目的
 
 Sway セッションのスクリーンロックを、小さく検証しやすい構成で作り直す。
-要求は次の 3 点。
+要求は次の 4 点。
 
 1. YubiKey で解除できる（PIN 入力）。
 2. YubiKey が無いときはパスワードで解除できる。パスワードは設定で無効化できる。
 3. カードアクセスの競合で挙動が不安定にならない。
-4. sudo でも同じ YubiKey を使える（任意、Phase 7）。
+4. sudo でも同じ YubiKey を使える（任意）。
 
 ## 2. 背景
 
-現行構成は hyprlock + pam_pkcs11 (PIV) + pcsc-card-watcher で、次の問題を抱えている。
+移行前の構成は hyprlock + pam_pkcs11 (PIV) + pcsc-card-watcher で、次の問題を抱えていた。
 
 - **PC/SC リーダの二重所有**: `scdaemon`（GnuPG。`disable-ccid` で pcscd 経由）と
   `pam_pkcs11`（opensc-pkcs11 で pcscd 経由）が、どちらも exclusive にカードを握る。
-- 現行の回避策は「ロック起動時と PAM auth 時に scdaemon を SIGKILL する」。
+- 移行前の回避策は「ロック起動時と PAM auth 時に scdaemon を SIGKILL する」。
   これはタイミング依存で、SSH や commit の署名要求と重なると失敗する。
 - hyprlock は Hyprland 向けの実装で、Sway 上では入力の扱いが不安定。
   実際に `pam_unix(hyprlock:auth): authentication failure` が、正しい
@@ -31,7 +31,7 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
 - Sway 用のロック画面（`ext-session-lock-v1`）と、独立した認証ヘルパ。
 - OpenPGP applet によるチャレンジ署名認証。
 - PAM によるパスワード認証（設定で無効化可能）。
-- sudo 用の PAM モジュール（任意、Phase 7）。
+- sudo 用の PAM モジュール（任意）。
 - pacman package と ansible role による配布。
 
 **やらないこと**
@@ -40,8 +40,8 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
 - IME 入力、通知連携、スクリーンセーバー的な演出。
 - マルチユーザ対応（単一 UID 前提）。
 - PIV 証明書による認証（PAM PIV は廃止する）。
-- sudo 用 PAM モジュールの既定有効化（Phase 7 で実装するが、ホストごとに
-  ansible で明示的に有効化する）。
+- sudo 用 PAM モジュールの既定有効化（ホストごとに ansible で明示的に
+  有効化する）。
 
 ## 4. アーキテクチャ
 
@@ -78,11 +78,14 @@ UI は認証ロジックを持たない。UI と認証を分ける理由は次�
 カード上の秘密鍵でチャレンジに署名し、対応する公開鍵で検証する。
 
 1. ヘルパが 32 byte のランダムチャレンジを作る。
-2. `gpg --local-user <key>! --detach-sign --pinentry-mode loopback
+2. gpg-agent の該当鍵の PIN キャッシュを `CLEAR_PASSPHRASE` で消す。
+   gpg-agent は一度成功した PIN をキャッシュし、その間は間違った PIN でも
+   署名を通すため、署名のたびに消す。
+3. `gpg --local-user <key>! --detach-sign --pinentry-mode loopback
    --passphrase-fd 0` に PIN とチャレンジを渡す。
    （`!` は primary を固定するため必須。付けないと署名 subkey に解決され、
    別カードを要求する。）
-3. 出力した署名を `gpg --verify` で検証し、チャレンジと一致することを確認する。
+4. 出力した署名を `gpg --verify` で検証し、チャレンジと一致することを確認する。
    `VALIDSIG` の fingerprint が設定鍵と一致し、`REVKEYSIG` / `KEYREVOKED` /
    `EXPKEYSIG` / `KEYEXPIRED` / `SIGEXPIRED` が無いことを確認する。
 
@@ -141,10 +144,11 @@ package は `ttf-dejavu` を依存に入れる。
 - ヘルパは要求の読み取りに `timeout_sec` を使う。時間内に要求が来なければ
   応答せず接続を閉じる（UI は接続失敗として扱う）。
 - カードが抜けた場合は `YUBIKEY NOT FOUND` を表示し、`password` が有効なら
-  パスワードモードへ切り替える。
-- ロック開始時に `status` を 1 回問い合わせ、カードの有無と有効な方式を反映する。
+  パスワードモードへ切り替える。切り替え時は入力中の秘密を破棄し、自動送信しない。
+  カードを挿し直しても PIN モードには戻さない。
+- ロック開始時に `status` を問い合わせ、以降も 10 秒間隔でカードの有無を確認する。
   応答が来るまではパスワードを既定にする（カードのリトライを消費しないため）。
-  カードがあり `pin` が有効なら、その応答で PIN モードへ切り替える。
+  カードがあり `pin` が有効なら、最初の応答で PIN モードへ切り替える。
 - 状態メッセージは既定フォントで描ける英語にする（`AUTH FAILED (1/5)`、
   `WAIT 5s`、`YUBIKEY ERROR`、`PAM ERROR` など）。
 - `[ui] max_attempts` は連打抑止。認証失敗の直後に 1 秒、連続失敗が上限に
@@ -153,7 +157,7 @@ package は `ttf-dejavu` を依存に入れる。
 - 秘密（PIN / パスワード）はログに出さない。受信バッファは使用後に zeroize する。
   UI の入力欄も送信結果を受け取った時点で zeroize する。
 
-### 5.5 sudo（Phase 7、任意）
+### 5.5 sudo（任意）
 
 sudo の YubiKey 認証は `pam_nekonolock.so` で行う。ロック画面の
 `nekonolock-auth` socket には接続しない。UI 用ヘルパはユーザーが起動・
@@ -277,7 +281,7 @@ password_accent = "#A34A3A"
   UI は `[ui]` を独立に解釈し、`[auth]` / `[pam]` の型・未知項目の誤りは
   既定値に落としてロックを維持する。トップレベルの未知の項目は両方が拒否する。
 
-### 7.1 sudo 用の設定（Phase 7）
+### 7.1 sudo 用の設定
 
 sudo 用の PAM モジュールは、ユーザーの設定ではなく root 所有の
 `/etc/nekonolock/sudo.toml` を読む。検証用の公開鍵は
@@ -354,7 +358,8 @@ users = []          # 空なら全ユーザー
 - `pcsc-shared` は使わない（`disable-ccid` のまま）。
 
 結果として、ロック解除・SSH 署名・git commit 署名が同じ scdaemon を共有し、
-競合は「待つ」だけで解決する（pcscd が直列化する）。
+競合は「待つ」だけで解決する（pcscd が直列化する）。ロック中も同じ uid の
+プロセスは署名できるため、画面ロックをカードアクセスの境界にはしない。
 
 ## 10. セキュリティ
 
@@ -364,6 +369,12 @@ users = []          # 空なら全ユーザー
 - パスワードは PAM の `pam_faillock` に委ねる。
 - PIN の試行はカード側のリトライ回数が上限。UI の `max_attempts` は
   連打を抑えるだけで、PIN の自動再試行はしない。
+- 署名の前に gpg-agent の PIN キャッシュを消す。キャッシュが温まっていると
+  間違った PIN でも署名が通り、PIN を第二要素として扱えなくなる。
+- **画面ロックは同一 uid のプロセスに対するカードアクセスの境界ではない。**
+  ロック中もユーザーの gpg-agent / scdaemon は動き続け、同じ uid のプロセスは
+  カード署名を要求できる。ロック時に scdaemon を止めると SSH / git 署名と
+  競合するため、この構成では境界にしない（[ADR-0028](decisions.md)）。
 - OpenPGP の署名検証では、失効・期限切れの鍵（`REVKEYSIG` / `KEYREVOKED` /
   `EXPKEYSIG` / `KEYEXPIRED` / `SIGEXPIRED`）を拒否する。カードは失効を
   知らずに署名できるため、検証側で止める（[ADR-0016](decisions.md)）。
@@ -381,8 +392,8 @@ users = []          # 空なら全ユーザー
 ## 11. テスト方針
 
 - 単体: プロトコルの serde 往復、設定の既定値と不正値、チャレンジ検証ロジック
-  （署名器はモック）、入力状態（モード切替・文字種・長さ上限・クールダウン）、
-  描画のレイアウト（フレーム太さ・帯の高さ・色の解釈）、時計の書式。
+  （署名器はモック）、入力状態（モード切替・文字種・長さ上限・クールダウン・
+  カード抜去）、描画のレイアウト（フレーム太さ・帯の高さ・色の解釈）、時計の書式。
 - sudo: `crates/pam` の設定検証（root 所有・モード・key/users/上限）、
   PIN の受理・拒否、カード無し・カードエラーのマッピングを単体テストする。
   PAM の会話関数と `pam_sm_authenticate` の export は実機の sudo で確認する。
@@ -390,8 +401,8 @@ users = []          # 空なら全ユーザー
   `kind` の不整合、タイムアウトを検証する。
   `crates/auth/tests/helper.rs` は実際にバイナリを起動して socket 越しに確認する。
   `crates/lock` の auth クライアントも、テスト内で socket を立てて往復を確認する。
-- E2E (Phase 3): Sway 1.12 の headless 出力（pixman）で、2 出力のロック、
-  出力追加・削除、誤 PIN 後の維持、正しい PIN / パスワードでの解除を確認済み。
+- E2E: Sway 1.12 の headless 出力（pixman）で、2 出力のロック、
+  出力追加・削除、誤 PIN 後の維持、正しい PIN / パスワードでの解除を確認する。
 - E2E: 実機で手動チェックリスト。
   - YubiKey 挿入 → PIN で解除
   - YubiKey 抜去 → パスワードで解除
@@ -412,14 +423,14 @@ crates/proto   # 要求/応答の型と socket ヘルパ
 crates/gpg     # OpenPGP の署名・検証（認証ヘルパと PAM モジュールで共有）
 crates/auth    # nekonolock-auth
 crates/lock    # nekonolock (UI)
-crates/pam     # pam_nekonolock.so（sudo、Phase 7）
+crates/pam     # pam_nekonolock.so（sudo）
 packaging/     # PKGBUILD と ansible role のステージング
 ```
 
 - pacman package `nekonolock`（[nekono] repo）。バイナリ 2 本、
   `/etc/pam.d/nekonolock`、systemd-user unit 2 つ（socket activation、
-  `/usr/lib/systemd/user/`）、`/usr/lib/security/pam_nekonolock.so`（Phase 7
-  を含むソースからビルドした場合）、sudo 用設定の例、LICENSE を同梱する。
+  `/usr/lib/systemd/user/`）、`/usr/lib/security/pam_nekonolock.so`、
+  sudo 用設定の例、LICENSE を同梱する。
   依存は `gnupg` / `libxkbcommon` / `pam` / `ttf-dejavu`（既定フォント）。
   YubiKey を pcscd 経由で使うホスト向けに `pcsclite` / `ccid` を
   optdepends に置く。
@@ -444,71 +455,22 @@ packaging/     # PKGBUILD と ansible role のステージング
 - `packaging/` は移植用のステージング。pacman repo と ansible repo への
   移植手順は `packaging/README.md` に書く。
 
-## 13. ロードマップ
+## 13. 実装状況
 
-- [x] Phase 0: 設計（本ドキュメント）
-- [ ] Phase 1: スパイク
-  - [x] `gpg --pinentry-mode loopback --passphrase-fd` でカード鍵に署名できるか
-        （2026-11-14 実測: `spike/01-gpg-card-loopback.sh` で sign/verify とも OK。
-        EDDSA 483DC691DF9F29327EA106BD030130E2F156CD74。この方式で実装する）
-  - [x] Sway 1.12 の `ext-session-lock-v1` で全出力ロックできるか
-        （2026-11-14 実測: Arch Linux + Sway 1.12（wlroots headless / pixman）の
-        VM で `crates/lock` のプロトタイプを動かした。2 出力にロックサーフェスを
-        張り、ロック中の出力追加（HEADLESS-3）にも追従し、キー入力で解除して
-        終了コード 0 で終了した。ログは `locked` → `lock-surface: created
-        HEADLESS-2/1` → `1280x720` → `created HEADLESS-3` → `key-pressed` →
-        `unlocked` → `done`。出力の削除だけは未確認。
-        再現手順は `spike/02-ext-session-lock-vm.sh`（Docker + KVM が必要）。
-        この測定は `--features insecure-test-unlock` を付けた検証用ビルドで
-        行った。既定ビルドは Phase 3 までキー入力を無視していた（fail-closed）。
-        Phase 3 で認証を実装し、`insecure-test-unlock` feature は削除した。
-        `spike/02` は現在、ロックサーフェス・出力追加・認証なしのキー入力で
-        解除されないことを確認する回帰スクリプトになっている。解除までの
-        E2E は `spike/03-lock-ui-sway.sh`。）
-- [x] Phase 2: `crates/proto` と `crates/auth`（OpenPGP + PAM）+ テスト
-  （2026-11-15 実装。`SOCK_SEQPACKET` + JSON、peer uid 検証、0700/0600、
-  gpg の loopback 署名と VALIDSIG 検証、`libpam.so.0` の `dlopen`、
-  `mock-card` / `mock-pam` による結合テスト。gpg の署名は EDDSA の実カードで
-  Phase 1 に確認済みの方式を使う。PAM 実機の `/etc/pam.d/nekonolock` は Phase 4。）
-- [x] Phase 3: `crates/lock`（全出力、入力、描画、認証連携）
-  （2026-11-15 実装。`ext-session-lock-v1` の全出力ロックと出力追加・削除への
-  追従、`wl_keyboard` + xkbcommon の入力、accent line / モード capsule / 時計 /
-  入力欄 / メッセージの CPU 描画、`nekonolock-auth` への status / unlock
-  要求（別スレッド）、失敗時のロック維持。`insecure-test-unlock` は削除した。
-  設定・フォントの読み込みより先にロックを取得し、読み込み失敗時はフォールバック
-  描画でロックを維持する。
-  Sway 1.12 headless（pixman）で 2 出力、出力追加・削除、誤 PIN 後の維持、
-  正しい PIN / パスワードでの解除を確認。UI の自動テストは
-  `cargo test --workspace`。再現手順は `spike/03-lock-ui-sway.sh`
-  （Docker + モック認証ヘルパ）。）
-- [x] Phase 4: packaging と ansible role
-  （2026-11-15 実装。`packaging/PKGBUILD`、`/etc/pam.d/nekonolock`、
-  `ListenSequentialPacket=` の systemd user unit 2 本、ansible role
-  `nekonolock`。role は package 導入、PAM 配置、socket の enable、
-  swayidle の差し替えを行う。検証は `spike/04-package-ansible.sh`
-  （Arch Linux コンテナで makepkg / pacman -U / ansible-playbook）。
-  v0.1.0 tag 後は tag archive を pin している（[ADR-0021](decisions.md)）。）
-- [x] UI: Ink テーマ、モード capsule、HiDPI（integer buffer scale）、
-  無操作時の純黒
-  （2026-11-15。`docs/images/` の画像は
-  `cargo run -p nekonolock --example preview` で再生成する。）
-- [x] Phase 7（任意）: sudo 用 PAM モジュール
-  （2026-11-15 実装。`crates/pam` の `pam_nekonolock.so`。ユーザーの
-  `nekonolock-auth` socket は信頼せず、`crates/gpg` を共有して署名だけを
-  実 uid の gpg-agent にさせ、検証は root 側の一時 keyring で行う。
-  設定は root 所有の `/etc/nekonolock/sudo.toml` と `sudo-key.asc`。
-  `PAM_IGNORE` でパスワード認証へフォールバックする。ansible role は
-  `nekonolock_sudo_auth` で明示的に有効化する（[ADR-0027](decisions.md)）。）
+- `crates/proto` / `crates/auth`: `SOCK_SEQPACKET` + JSON、peer uid 検証、
+  OpenPGP の loopback 署名と `VALIDSIG` 検証、`libpam.so.0` の `dlopen`。
+- `crates/lock`: `ext-session-lock-v1` の全出力ロック、出力追加・削除への追従、
+  `wl_keyboard` + xkbcommon の入力、CPU 描画、認証ヘルパとの連携。
+- `crates/pam`: sudo 用 `pam_nekonolock.so`。既定は無効で、ansible の
+  `nekonolock_sudo_auth` で明示的に有効化する。
+- `packaging/`: pacman package と ansible role。検証は `spike/04-package-ansible.sh`
+  と `spike/05-sudo-pam.sh`。
+- UI: Ink / Paper テーマ、モード capsule、HiDPI（整数倍バッファ）、
+  無操作時の純黒。`docs/images/` の画像は
+  `cargo run -p nekonolock --example preview` で再生成する。
 
-## 14. 未確定事項
+## 14. 残っている検討事項
 
-- ~~`gpg --pinentry-mode loopback` がカード鍵の PIN を scdaemon へ正しく渡せるか。~~
-  **解決済み (2026-11-14)**: `spike/01-gpg-card-loopback.sh` で
-  `--pinentry-mode loopback --passphrase-fd` による署名と検証が成功した。
-  実装はこの方式を前提にする（Assuan 直叩きは不要）。
-- Sway 1.12 の `ext-session-lock-v1` で、ロック中の出力削除の挙動。
-  2026-11-14 時点では未確認だったが、Phase 3 で `swaymsg output HEADLESS-3
-  unplug` により削除へ追従することを確認した。
 - 時計の日本語表示に CJK フォントが必要かどうか（必要なら依存を追加）。
 - fractional scale (1.25 / 1.5) の厳密な対応。`wl_output.scale` の整数倍で
   近似する（Sway の 1.75 は scale 2 で描く）。fractional-scale / viewporter は

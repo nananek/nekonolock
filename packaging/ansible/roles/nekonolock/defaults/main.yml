@@ -24,7 +24,7 @@ nekonolock_swayidle_command: >-
   resume 'swaymsg "output * power on"'
   before-sleep 'nekonolock'
 
-# sudo 用の YubiKey 認証（Phase 7）。既定は無効で、ロック画面だけを使う
+# sudo 用の YubiKey 認証。既定は無効で、ロック画面だけを使う
 # ホストの PAM 設定を変えない。有効にする場合は key と公開鍵を渡す。
 nekonolock_sudo_auth: false
 nekonolock_sudo_key: ""

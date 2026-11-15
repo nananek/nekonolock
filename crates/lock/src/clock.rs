@@ -16,7 +16,7 @@ pub fn format_now(format: &str) -> String {
     format_at(format, chrono::Local::now())
 }
 
-/// 任意の時刻を整形する（テストと、将来の固定時刻表示用）。
+/// 任意の時刻を整形する（テスト用）。
 pub fn format_at<Tz: TimeZone>(format: &str, now: DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
