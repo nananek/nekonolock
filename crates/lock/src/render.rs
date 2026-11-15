@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 
-use fontdue::{Font, FontSettings};
+use fontdue::{Font, FontSettings, Metrics};
 use nekonolock_proto::UiConfig;
 
 use crate::input::Mode;
@@ -144,6 +144,9 @@ fn parse(name: &str, value: &str) -> Result<Color, String> {
     Color::from_hex(value)
         .ok_or_else(|| format!("[ui] {name} を #rrggbb として解釈できない: {value}"))
 }
+
+/// 下端の操作ヒント。画面のコピーはすべて大文字に揃える。
+const BOTTOM_HINT: &str = "TAB  SWITCH MODE     /     ENTER  UNLOCK";
 
 /// 1 フレーム分の表示内容。
 pub struct View<'a> {
@@ -279,14 +282,15 @@ impl Renderer {
         let small = (h * 0.0105).max(8.0);
         let tracking = h * 0.0024;
         if let Some(font) = self.font() {
-            if !view.label.is_empty() {
+            let label = view.label.to_uppercase();
+            if !label.is_empty() {
                 draw_text(
                     font,
                     canvas,
                     stride,
                     width,
                     height,
-                    view.label,
+                    &label,
                     margin,
                     top_y,
                     small,
@@ -492,21 +496,21 @@ impl Renderer {
             }
         }
 
-        // 状態メッセージ。無ければモードごとの案内。
+        // 状態メッセージ。無ければモードごとの案内。どちらも大文字で出す。
         if let Some(font) = self.font() {
             let (text, color) = if view.message.is_empty() {
-                (view.mode.hint(), theme.dim)
+                (view.mode.hint().to_string(), theme.dim)
             } else {
-                (view.message, theme.foreground)
+                (view.message.to_uppercase(), theme.foreground)
             };
-            let size = fit_size(font, text, h * 0.0146, w * 0.82, 0.0);
+            let size = fit_size(font, &text, h * 0.0146, w * 0.82, 0.0);
             draw_text(
                 font,
                 canvas,
                 stride,
                 width,
                 height,
-                text,
+                &text,
                 w / 2.0,
                 h * 0.6402,
                 size,
@@ -516,16 +520,15 @@ impl Renderer {
             );
 
             // 下端の操作ヒント。小さく、でも読み取れる濃さにする。
-            let bottom = "TAB  switch mode     /     ENTER  unlock";
             let tracking = h * 0.0010;
-            let size = fit_size(font, bottom, h * 0.0105, w * 0.9, tracking);
+            let size = fit_size(font, BOTTOM_HINT, h * 0.0105, w * 0.9, tracking);
             draw_text(
                 font,
                 canvas,
                 stride,
                 width,
                 height,
-                bottom,
+                BOTTOM_HINT,
                 w / 2.0,
                 h * 0.9238,
                 size,
@@ -769,13 +772,12 @@ fn draw_text(
         Align::Center => x - total / 2.0,
         Align::Right => x - total,
     };
-    let max_height = metrics.iter().map(|m| m.height).max().unwrap_or(0);
-    let top = center_y - max_height as f32 / 2.0;
+    let baseline = text_baseline(font, size, center_y, &metrics).round() as i32;
     let mut pen = start;
     for (c, metric) in text.chars().zip(metrics.iter()) {
         let (_, bitmap) = font.rasterize(c, size);
         let x = pen.round() as i32 + metric.xmin;
-        let y = top.round() as i32 + (max_height.saturating_sub(metric.height) / 2) as i32;
+        let y = glyph_top(metric, baseline);
         blit(
             canvas,
             stride,
@@ -789,6 +791,42 @@ fn draw_text(
         );
         pen += metric.advance_width + tracking;
     }
+}
+
+/// 行のベースライン（画面座標、下向き正）。
+///
+/// 文字ごとのビットマップを縦中央へ寄せると、小文字や降下部が大文字と
+/// 同じ帯に浮いて見える。フォントの ascent / descent から行の中心を求め、
+/// すべてのグリフを同じベースラインに載せる。
+fn text_baseline(font: &Font, size: f32, center_y: f32, metrics: &[Metrics]) -> f32 {
+    if let Some(line) = font.horizontal_line_metrics(size) {
+        return center_y + (line.ascent + line.descent) / 2.0;
+    }
+    ink_baseline(center_y, metrics)
+}
+
+/// 行メトリクスを持たないフォント向けのフォールバック。この行のグリフの
+/// 上端と下端から中心を求める。
+fn ink_baseline(center_y: f32, metrics: &[Metrics]) -> f32 {
+    if metrics.is_empty() {
+        return center_y;
+    }
+    let ascent = metrics
+        .iter()
+        .map(|m| (m.ymin + m.height as i32) as f32)
+        .fold(f32::MIN, f32::max);
+    let descent = metrics
+        .iter()
+        .map(|m| m.ymin as f32)
+        .fold(f32::MAX, f32::min);
+    center_y + (ascent + descent) / 2.0
+}
+
+/// グリフのビットマップ上端の y。`ymin` はベースラインからビットマップ
+/// 下端までの上向きオフセット（降下部は負）なので、上端はさらに
+/// `height` だけ上になる。
+fn glyph_top(metric: &Metrics, baseline: i32) -> i32 {
+    baseline - metric.ymin - metric.height as i32
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1016,5 +1054,61 @@ mod tests {
                     .any(|pixel| pixel[3] == 0xff)
             );
         }
+    }
+
+    #[test]
+    fn bottom_hint_is_uppercase() {
+        assert_eq!(BOTTOM_HINT, BOTTOM_HINT.to_uppercase());
+    }
+
+    #[test]
+    fn glyphs_sit_on_a_shared_baseline() {
+        let baseline = 100;
+        let cap = Metrics {
+            ymin: 0,
+            height: 14,
+            ..Metrics::default()
+        };
+        let x_height = Metrics {
+            ymin: 0,
+            height: 9,
+            ..Metrics::default()
+        };
+        let descender = Metrics {
+            ymin: -3,
+            height: 9,
+            ..Metrics::default()
+        };
+
+        // 小文字を大文字と同じ上端に揃えない。下端（ベースライン）だけを揃える。
+        assert_eq!(glyph_top(&cap, baseline), 86);
+        assert_eq!(glyph_top(&x_height, baseline), 91);
+        assert_eq!(
+            glyph_top(&cap, baseline) + cap.height as i32,
+            glyph_top(&x_height, baseline) + x_height.height as i32
+        );
+        // 降下部はベースラインより下へ出る。
+        assert_eq!(glyph_top(&descender, baseline), 94);
+        assert!(
+            glyph_top(&descender, baseline) + descender.height as i32 > baseline,
+            "descender must go below the baseline"
+        );
+    }
+
+    #[test]
+    fn ink_baseline_centers_glyph_extents() {
+        let cap = Metrics {
+            ymin: 0,
+            height: 14,
+            ..Metrics::default()
+        };
+        let descender = Metrics {
+            ymin: -3,
+            height: 9,
+            ..Metrics::default()
+        };
+        // 上端 14、下端 -3 の帯を center_y のまわりに置く。
+        assert_eq!(ink_baseline(50.0, &[cap, descender]), 55.5);
+        assert_eq!(ink_baseline(50.0, &[]), 50.0);
     }
 }

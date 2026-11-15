@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "nekonolock"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "nekonolock-auth"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "nekonolock-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "nix",
  "serde",
