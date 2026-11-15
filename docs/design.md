@@ -89,17 +89,20 @@ UI は認証ロジックを持たない。UI と認証を分ける理由は次�
    `VALIDSIG` の fingerprint が設定鍵と一致し、`REVKEYSIG` / `KEYREVOKED` /
    `EXPKEYSIG` / `KEYEXPIRED` / `SIGEXPIRED` が無いことを確認する。
 
-カードを持つのは scdaemon だけになるため、pcscd のセッション競合は起きない。
-`pam_pkcs11` / `opensc` / `pcsc-card-watcher` は対象ホストから外す。
+ロック画面と sudo は OpenPGP applet（scdaemon 経由）を使う。PIV
+(`pam_pkcs11`) は SDDM / login / TTY 用に残すが、ロック画面の OpenPGP 経路とは
+PAM を分け、ロック画面の password は pam_pkcs11 を通さない。
 
 PIN の入力は `--pinentry-mode loopback` でヘルパが渡す。カード側の PIN
 リトライ回数（3 回）を消費するのは「PIN モードとして送った入力」だけにする。
 
 ### 5.2 パスワード（第二手段、設定で無効化可能）
 
-PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
-`system-auth` の `pam_faillock` がそのまま効くので、総当たりは
-アカウントロックで抑止される。
+PAM の `/etc/pam.d/nekonolock` は password-only の chain を通す。`auth` は
+`pam_faillock` + `pam_unix` だけにし、`system-auth` の `pam_pkcs11 sufficient`
+を先に通さない。ロック画面のパスワードが PIV PIN としてカードに送られ、
+PIV のリトライを消費するのを避けるため。`account` は `login` include のままで、
+faillock とアカウントの期限切れを確認する。
 
 ### 5.3 モードの決定（PIN リトライ保護）
 
@@ -358,9 +361,9 @@ users = []          # 空なら全ユーザー
 
 変更点は「カードを持つプロセスを 1 つにする」ことに尽きる。
 
-- 認証は OpenPGP applet（scdaemon 経由）に統一する。
-- `pam_pkcs11`、`opensc`、`ykman` の常駐、`pam_yubikey` role の PAM 注入を
-  対象ホストから外す。
+- ロック画面と sudo の認証は OpenPGP applet（scdaemon 経由）に寄せる。
+- PIV (`pam_pkcs11`) は SDDM / login / TTY 用に残す。ロック画面の password は
+  `system-auth` の `pam_pkcs11` を通さない。
 - `lock-release-scdaemon` のような scdaemon kill は廃止する。
 - `pcsc-shared` は使わない（`disable-ccid` のまま）。
 

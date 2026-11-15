@@ -14,7 +14,7 @@ pacman package `nekonolock` と ansible role `nekonolock` のステージング�
 |---|---|
 | `/usr/bin/nekonolock` | ロック画面（`ext-session-lock-v1`） |
 | `/usr/bin/nekonolock-auth` | 認証ヘルパ（OpenPGP / PAM） |
-| `/etc/pam.d/nekonolock` | パスワード認証。`auth` と `account` の両方で `login` を include する |
+| `/etc/pam.d/nekonolock` | パスワード認証。`auth` は `pam_faillock` + `pam_unix` の password-only、`account` は `login` include |
 | `/usr/lib/systemd/user/nekonolock-auth.socket` | `SOCK_SEQPACKET` の socket activation |
 | `/usr/lib/systemd/user/nekonolock-auth.service` | 認証ヘルパ本体 |
 | `/usr/lib/security/pam_nekonolock.so` | sudo 用 PAM モジュール（v0.3.0 以降） |
@@ -103,7 +103,7 @@ bash spike/04-package-ansible.sh
 主な変数は `defaults/main.yml` を参照。既定では次を行う。
 
 - package を入れる
-- `/etc/pam.d/nekonolock` を `auth` / `account` とも `login` include で置く
+- `/etc/pam.d/nekonolock` を `auth` は password-only、`account` は `login` include で置く
 - `nekonolock-auth.socket` を user manager で enable + start する
 - `~/.config/sway/config` の `exec swayidle ...` 行の lock コマンドを
   `nekonolock` に差し替える
@@ -132,8 +132,9 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 
 ## 実機で必要な設定
 
-- YubiKey: `scdaemon` を pcscd 経由で使う（`disable-ccid`）。`pam_pkcs11` /
-  `opensc` / `pcsc-card-watcher` は外す（設計 §9）。
+- YubiKey: ロック画面と sudo は OpenPGP applet（scdaemon 経由）を使う。
+  PIV (`pam_pkcs11`) は SDDM / login / TTY 用に残す。ロック画面の password は
+  `system-auth` の `pam_pkcs11` を通さない（設計 §5.2 / §9）。
 - `[auth] key` は実際の鍵の long key ID か fingerprint にする。
 - パスワードを無効にするホストは `[auth] password = false` にする。
 - `[pam] service` を変えた場合は、role の `nekonolock_pam_service` も合わせる。

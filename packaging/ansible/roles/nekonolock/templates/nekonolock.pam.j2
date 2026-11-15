@@ -1,8 +1,15 @@
 #%PAM-1.0
 # Managed by ansible (role nekonolock). Do not edit by hand.
 #
-# login は system-login -> system-auth を辿る。pam_faillock の
-# auth / account がそのまま効く。認証ヘルパは pam_authenticate の後に
-# pam_acct_mgmt を呼ぶため、account も必要。
-auth     include {{ nekonolock_pam_include }}
+# ロック画面のパスワードは pam_unix だけを通す。`auth include login` に
+# すると system-auth の pam_pkcs11 sufficient が先に走り、ロック画面の
+# パスワードが PIV PIN としてカードに送られる。account は login のままでよい。
+auth     required pam_faillock.so preauth
+-auth    [success=2 default=ignore] pam_systemd_home.so
+auth     [success=1 default=bad] pam_unix.so try_first_pass nullok
+auth     [default=die] pam_faillock.so authfail
+auth     optional pam_permit.so
+auth     required pam_env.so
+auth     required pam_faillock.so authsucc
+
 account  include {{ nekonolock_pam_include }}

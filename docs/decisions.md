@@ -34,6 +34,8 @@
   排他デーモンを別途作る必要があり、scdaemon 側の挙動は結局ブラックボックス。
 - 却下: `pcsc-shared` — 2026-05-13 の実測で不採用。pcscd の同時接続で
   scdaemon が不安定になる。
+- 変更 (2026-11-15): PIV (`pam_pkcs11`) は SDDM / login / TTY 用に残す。
+  ロック画面と sudo は OpenPGP、SDDM / login は PIV と使い分ける。
 
 ## ADR-0004: 認証は別プロセスに分離し、Unix socket で受ける
 
@@ -230,6 +232,9 @@
   `pam_acct_mgmt` の結果を正しく扱えない。
 - 補足: package の既定ファイルと ansible role の template は同じ内容に
   する。`packaging/` の検証で両方を確認する。
+- 変更 (2026-11-15): auth は `auth include login` をやめ、`system-auth` から
+  `pam_pkcs11` を除いた password-only chain にした。account は `login`
+  include のまま。理由と却下案は ADR-0030。
 
 ## ADR-0021: v0.1.0 tag ができるまで source は commit を pin する
 
@@ -388,3 +393,16 @@
 - 判断: 2 か 3 を既定にするなら、SSH / git をロック中に止めてよいか、
   リモートセッションをどう扱うかを先に決める。決まるまでは現状維持とし、
   画面ロックをカードの権限境界として案内しない。
+
+## ADR-0030: ロック画面の PAM auth は password-only chain にする
+
+- 決定: `/etc/pam.d/nekonolock` の `auth` は `pam_faillock` + `pam_unix` の
+  password-only chain にし、`system-auth` の `pam_pkcs11 sufficient` を
+  先に通さない。`account` は `login` include のまま。
+- 理由: `auth include login` だと、ロック画面のパスワードが PIV PIN として
+  カードに送られ、PIV のリトライを消費する。PIV は SDDM / login / TTY 用に
+  残すが、ロック画面の password 経路からは切り離す。
+- 却下: `[auth] password = false` — パスワードフォールバックが消える。
+- 却下: `system-auth` から `pam_pkcs11` を外す — SDDM の PIV が使えなくなる。
+- 補足: `account include login` は `pam_acct_mgmt` のため残す。`pam_faillock`
+  の auth / account もそのまま効く。
