@@ -129,3 +129,96 @@
   when:
     - nekonolock_manage_swayidle | bool
     - nekonolock_sway.stat.exists
+
+# --- sudo 用 PAM モジュール（Phase 7） -------------------------------------
+
+# 有効にするときだけ、鍵と PAM の設定を検証する。無効時は何も変えない。
+- name: Validate sudo PAM inputs
+  ansible.builtin.assert:
+    that:
+      - nekonolock_sudo_key is match('^([0-9A-Fa-f]{16}|[0-9A-Fa-f]{40})!?$')
+      - nekonolock_sudo_public_key | length > 0
+      - nekonolock_sudo_public_key is search('-----BEGIN PGP PUBLIC KEY BLOCK-----')
+      - nekonolock_sudo_public_key_path is match('^/[A-Za-z0-9_./-]+$')
+      - nekonolock_sudo_config is match('^/[A-Za-z0-9_./-]+$')
+      - nekonolock_sudo_pam_service is match('^[A-Za-z0-9_.-]+$')
+      - nekonolock_sudo_pam_include is match('^[A-Za-z0-9_.-]+$')
+      - nekonolock_sudo_users | select('match', '^[A-Za-z0-9_.@-]+$') | list | length == nekonolock_sudo_users | length
+    fail_msg: >-
+      nekonolock_sudo_auth を有効にするには、16/40 桁の key、ASCII armored の
+      公開鍵、絶対パスの public_key_path/config、安全な PAM サービス名が必要。
+  when: nekonolock_sudo_auth | bool
+  tags: always
+
+- name: Check the sudo PAM service
+  ansible.builtin.stat:
+    path: "/etc/pam.d/{{ nekonolock_sudo_pam_service }}"
+  register: nekonolock_sudo_pam_file
+
+- name: Fail when the sudo PAM service is missing
+  ansible.builtin.fail:
+    msg: >-
+      /etc/pam.d/{{ nekonolock_sudo_pam_service }} が無い。
+      nekonolock_sudo_pam_service を確認するか、nekonolock_sudo_auth: false にする。
+  when:
+    - nekonolock_sudo_auth | bool
+    - not nekonolock_sudo_pam_file.stat.exists
+
+- name: Check the PAM include line for sudo
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -Eq
+      - "^auth\\s+include\\s+{{ nekonolock_sudo_pam_include }}\\s*$"
+      - "/etc/pam.d/{{ nekonolock_sudo_pam_service }}"
+  changed_when: false
+  when: nekonolock_sudo_auth | bool
+
+- name: Ensure /etc/nekonolock exists
+  ansible.builtin.file:
+    path: "{{ nekonolock_sudo_config | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nekonolock_sudo_auth | bool
+
+- name: Deploy the sudo YubiKey config
+  ansible.builtin.template:
+    src: nekonolock-sudo.toml.j2
+    dest: "{{ nekonolock_sudo_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  when: nekonolock_sudo_auth | bool
+
+- name: Deploy the sudo verification key
+  ansible.builtin.copy:
+    content: "{{ nekonolock_sudo_public_key | trim }}\n"
+    dest: "{{ nekonolock_sudo_public_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  when: nekonolock_sudo_auth | bool
+
+- name: Enable the YubiKey prompt for sudo
+  ansible.builtin.lineinfile:
+    path: "/etc/pam.d/{{ nekonolock_sudo_pam_service }}"
+    regexp: '^auth\s+sufficient\s+pam_nekonolock\.so(\s|$)'
+    line: "auth sufficient pam_nekonolock.so"
+    insertbefore: '^auth\s+include\s+{{ nekonolock_sudo_pam_include }}\s*$'
+    backup: true
+  when: nekonolock_sudo_auth | bool
+
+# 無効化したときは、role が入れた 1 行だけを消す。PAM の他の行は触らない。
+- name: Disable the YubiKey prompt for sudo
+  ansible.builtin.lineinfile:
+    path: "/etc/pam.d/{{ nekonolock_sudo_pam_service }}"
+    regexp: '^auth\s+sufficient\s+pam_nekonolock\.so(\s|$)'
+    state: absent
+    backup: true
+  when:
+    - not (nekonolock_sudo_auth | bool)
+    - nekonolock_sudo_pam_file.stat.exists

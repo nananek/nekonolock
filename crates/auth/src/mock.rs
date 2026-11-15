@@ -3,8 +3,8 @@
 
 use std::env;
 
-use crate::card::{CardError, CardSigner};
 use crate::pam::{PamError, PasswordAuthenticator};
+use nekonolock_gpg::{CardError, CardSigner};
 
 pub const MOCK_PIN: &str = "123456";
 pub const MOCK_PASSWORD: &str = "test-password";

@@ -5,11 +5,26 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
+
+/// 子プロセスを実行するユーザー。PAM モジュールが root から呼ぶときに使う。
+///
+/// `home` と `runtime_dir` はそのユーザーが所有することを呼び出し側が確認する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub uid: u32,
+    pub gid: u32,
+    pub name: String,
+    pub home: PathBuf,
+    pub runtime_dir: PathBuf,
+}
 
 /// カード署名の抽象。テストではモックに差し替える。
 pub trait CardSigner {
@@ -35,6 +50,12 @@ pub enum CardError {
 pub struct GpgCard {
     key: String,
     timeout: Duration,
+    program: PathBuf,
+    identity: Option<Identity>,
+    homedir: Option<PathBuf>,
+    no_options: bool,
+    scrub_env: bool,
+    full_root: bool,
 }
 
 impl GpgCard {
@@ -42,7 +63,54 @@ impl GpgCard {
         Self {
             key: normalize_key(&key.into()),
             timeout,
+            program: PathBuf::from("gpg"),
+            identity: None,
+            homedir: None,
+            no_options: false,
+            scrub_env: false,
+            full_root: false,
         }
+    }
+
+    /// 実行する `gpg` の絶対パス。PAM モジュールは PATH に依存しない。
+    pub fn with_program(mut self, program: impl Into<PathBuf>) -> Self {
+        self.program = program.into();
+        self
+    }
+
+    /// 子プロセスを指定ユーザーとして実行する。root から呼ぶ場合に使う。
+    pub fn with_identity(mut self, identity: Identity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// `gpg --homedir` を固定する。root 側で信頼した鍵だけを検証するために使う。
+    pub fn with_homedir(mut self, homedir: impl Into<PathBuf>) -> Self {
+        self.homedir = Some(homedir.into());
+        self
+    }
+
+    /// ユーザー設定（`gpg.conf` など）を読まない。
+    pub fn with_no_options(mut self, no_options: bool) -> Self {
+        self.no_options = no_options;
+        self
+    }
+
+    /// 継承した環境変数を捨て、必要なものだけを設定する。
+    pub fn with_scrubbed_env(mut self, scrub_env: bool) -> Self {
+        self.scrub_env = scrub_env;
+        self
+    }
+
+    /// 子プロセスの実 uid も root にする。
+    ///
+    /// sudo の PAM モジュールは実 uid = 呼び出したユーザー、実効 uid = root で
+    /// 動く。gpg は実 uid でファイルを開くため、root 所有の一時 keyring を
+    /// 読ませるには子プロセスで `setuid(0)` して実 uid も 0 にする必要がある。
+    /// 検証用の信頼した鍵だけを扱う子に限定して使う。
+    pub fn with_full_root(mut self, full_root: bool) -> Self {
+        self.full_root = full_root;
+        self
     }
 
     /// `!` を付けて primary を固定する。付けないと署名 subkey に解決され、
@@ -56,10 +124,116 @@ impl GpgCard {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new("gpg");
+        let mut command = Command::new(&self.program);
+        if self.scrub_env {
+            command.env_clear();
+            command.env("PATH", "/usr/bin:/bin");
+        }
         // 出力の文言を分類に使うため、ロケールを固定する。
         command.env("LC_ALL", "C").env("LANG", "C");
+
+        if let Some(identity) = &self.identity {
+            command
+                .env("HOME", &identity.home)
+                .env("USER", &identity.name)
+                .env("LOGNAME", &identity.name)
+                .env("XDG_RUNTIME_DIR", &identity.runtime_dir)
+                .env("GNUPGHOME", identity.home.join(".gnupg"));
+            switch_identity(&mut command, identity.uid, identity.gid);
+        }
+
+        if self.full_root {
+            switch_identity(&mut command, 0, 0);
+        }
+
+        if let Some(homedir) = &self.homedir {
+            command.arg("--homedir").arg(homedir);
+        }
+        if self.no_options {
+            command.arg("--no-options");
+        }
         command
+    }
+
+    /// 署名用の一時ディレクトリを作る。
+    ///
+    /// 子プロセスを別ユーザーに落とす場合、root が作った 0700 の `/tmp` 配下
+    /// にはそのユーザーが入れない。そこでユーザーの runtime dir の中に作り、
+    /// 所有権をユーザーへ移す。中身はチャレンジと署名だけで秘密ではない。
+    fn private_tempdir(&self, prefix: &str) -> Result<tempfile::TempDir, CardError> {
+        match &self.identity {
+            Some(identity) => {
+                let dir = tempfile::Builder::new()
+                    .prefix(prefix)
+                    .tempdir_in(&identity.runtime_dir)?;
+                std::os::unix::fs::chown(dir.path(), Some(identity.uid), Some(identity.gid))?;
+                fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+                Ok(dir)
+            }
+            None => Ok(tempfile::Builder::new().prefix(prefix).tempdir()?),
+        }
+    }
+
+    /// 公開鍵のバイト列を `homedir` に取り込む。
+    ///
+    /// 呼び出し側が安全に読んだバイト列を渡せるよう、パスではなく中身を受け取る。
+    pub fn import_key_bytes(&self, bytes: &[u8]) -> Result<(), CardError> {
+        let homedir = self
+            .homedir
+            .as_ref()
+            .ok_or_else(|| CardError::Unavailable("homedir が無い".to_string()))?;
+        let path = homedir.join("nekonolock-pubkey.asc");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(bytes)?;
+        drop(file);
+        self.import_key(&path)
+    }
+
+    /// 信頼した公開鍵を `homedir` に取り込む。root 側の検証用。
+    pub fn import_key(&self, path: &Path) -> Result<(), CardError> {
+        let mut command = self.command();
+        command.args(["--batch", "--no-tty", "--import"]).arg(path);
+
+        let output = match run_command(command, None, self.timeout) {
+            Ok(output) => output,
+            Err(RunError::Timeout) => return Err(CardError::Timeout),
+            Err(RunError::Io(err)) => return Err(CardError::Unavailable(err.to_string())),
+        };
+        if !output.status.success() {
+            return Err(CardError::Unavailable(last_line_or(
+                &output.stderr,
+                "gpg が公開鍵を取り込めなかった",
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// 子プロセスの実 uid / 実効 uid を `uid` / `gid` に切り替える。
+///
+/// `pre_exec` は fork 後・exec 前に走る。ここでは async-signal-safe な
+/// syscall だけを使う。補助グループは引き継がず、umask も絞る。
+#[allow(unsafe_code)]
+fn switch_identity(command: &mut Command, uid: u32, gid: u32) {
+    // SAFETY: pre_exec の契約どおり、子プロセスで単純な syscall だけを行う。
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setgroups(0, std::ptr::null()) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::setgid(gid) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::setuid(uid) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            libc::umask(0o077);
+            Ok(())
+        });
     }
 }
 
@@ -78,12 +252,16 @@ impl CardSigner for GpgCard {
     }
 
     fn sign(&self, challenge: &[u8], pin: &str) -> Result<Vec<u8>, CardError> {
-        let dir = tempfile::Builder::new()
-            .prefix("nekonolock-sign-")
-            .tempdir()?;
+        let dir = self.private_tempdir("nekonolock-sign-")?;
         let challenge_path = dir.path().join("challenge");
         let signature_path = dir.path().join("challenge.sig");
         fs::write(&challenge_path, challenge)?;
+        if let Some(identity) = &self.identity {
+            // ディレクトリだけでなくチャレンジもユーザーが読めるようにする。
+            // 署名対象は秘密ではない。
+            std::os::unix::fs::chown(&challenge_path, Some(identity.uid), Some(identity.gid))?;
+            fs::set_permissions(&challenge_path, fs::Permissions::from_mode(0o600))?;
+        }
 
         let mut command = self.command();
         command
@@ -233,12 +411,17 @@ fn classify_sign_failure(stderr: &str) -> CardError {
         return CardError::BadPin;
     }
     // カードの詳細や鍵の情報を返さないよう、最後の 1 行だけにする。
-    let last = stderr
+    CardError::Unavailable(last_line_or(stderr.as_bytes(), "gpg が失敗した"))
+}
+
+/// stderr の最後の非空行だけを返す。詳細をエラーに載せすぎない。
+fn last_line_or(stderr: &[u8], fallback: &str) -> String {
+    String::from_utf8_lossy(stderr)
         .lines()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .unwrap_or("gpg が失敗した");
-    CardError::Unavailable(last.trim().to_string())
+        .map(|line| line.trim().to_string())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 #[derive(Debug)]

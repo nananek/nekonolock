@@ -1,0 +1,11 @@
+# Managed by ansible (role nekonolock). Do not edit by hand.
+#
+# sudo 用の PAM モジュール (pam_nekonolock.so) はこのファイルだけを読む。
+# ユーザーの ~/.config/nekonolock/config.toml は権限境界に使わない。
+[sudo]
+enabled = true
+key = "{{ nekonolock_sudo_key }}"
+public_key = "{{ nekonolock_sudo_public_key_path }}"
+challenge_bytes = {{ nekonolock_sudo_challenge_bytes }}
+timeout_sec = {{ nekonolock_sudo_timeout_sec }}
+users = [{% for user in nekonolock_sudo_users %}"{{ user }}"{% if not loop.last %}, {% endif %}{% endfor %}]

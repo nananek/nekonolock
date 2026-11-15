@@ -1,0 +1,14 @@
+[package]
+name = "nekonolock-gpg"
+description = "nekonolock の OpenPGP カード署名と検証"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libc = "0.2"
+tempfile = "3"
+thiserror = "2"
+zeroize = "1"
