@@ -27,40 +27,36 @@ optdepends=(
 )
 backup=('etc/pam.d/nekonolock')
 
-# 初回は v0.1.0 tag がまだ無いため、Phase 3 のコード commit を pin する。
-# tag を切ったら source を archive/refs/tags/v$pkgver.tar.gz に切り替え、
-# sha256sums を再計算する（手順は packaging/README.md）。
-_commit=1d28120987a2f2308078d7008421ce65b2310cae
-_srcdir="$pkgname-$_commit"
-
-source=("$_srcdir.tar.gz::https://github.com/nananek/nekonolock/archive/$_commit.tar.gz"
+# source は GitHub release tag の archive を pin する。tag を切っただけでは
+# なく GitHub Release を publish 済み (nvchecker は use_latest_release で見る)。
+source=("$pkgname-$pkgver.tar.gz::https://github.com/nananek/nekonolock/archive/refs/tags/v$pkgver.tar.gz"
         'nekonolock.pam'
         'nekonolock-auth.socket'
         'nekonolock-auth.service'
         'LICENSE')
-sha256sums=('130c7f21781d23cf074ed64099874db0702bbb71d0c323e107638ce00ca7345a'
+sha256sums=('f85020ee4140f20edb8f86d017a4b4ec098c1fd67ae95a0586bdf94967bdbda3'
             'cf1dfa3894ade5cb6801a00285a41f8dccd924116bcefea31b9683dd46957c4a'
             '79d6f29fd92abaef7c0265a5dbe784fb63a5e3ae20e5059c09bca4dd0d58d675'
             '510be1b0b290947ff3b51b5f25a005c8510c2b41575e213f49eac13e49e7c0d2'
             'e8a8dae92194b557ef75b2ba2e287354f59638463c51aad3378520de6b17b59e')
 
 prepare() {
-    cd "$_srcdir"
+    cd "$pkgname-$pkgver"
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-    cd "$_srcdir"
+    cd "$pkgname-$pkgver"
     cargo build --release --frozen -p nekonolock -p nekonolock-auth
 }
 
 check() {
-    cd "$_srcdir"
+    cd "$pkgname-$pkgver"
     cargo test --frozen --workspace
 }
 
 package() {
-    cd "$_srcdir"
+    cd "$pkgname-$pkgver"
     install -Dm755 target/release/nekonolock "$pkgdir/usr/bin/nekonolock"
     install -Dm755 target/release/nekonolock-auth "$pkgdir/usr/bin/nekonolock-auth"
 

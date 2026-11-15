@@ -39,17 +39,18 @@ makepkg --printsrcinfo > .SRCINFO
 （`cargo` を含む）。YubiKey を pcscd 経由で使うホストでは `pcsclite` と
 `ccid` も入れる（`optdepends`）。
 
-`source` は現時点で Phase 3 のコード commit を pin している。v0.1.0 tag を
-切ったら、次のように tag archive へ切り替えて `sha256sums` を再計算する。
+`source` は v0.1.0 から GitHub release tag の archive を pin している。
+`[nekono]` repo の `pkgs/nekonolock/` も同じ tag archive と sha256 を使う。
+新しい tag を切ったら、`pkgver` を上げて次のように `sha256sums` を再計算する。
 
 ```sh
-curl -fsSL -o /tmp/nekonolock-0.1.0.tar.gz \
-  https://github.com/nananek/nekonolock/archive/refs/tags/v0.1.0.tar.gz
-sha256sum /tmp/nekonolock-0.1.0.tar.gz
+curl -fsSL -o /tmp/nekonolock-0.2.0.tar.gz \
+  https://github.com/nananek/nekonolock/archive/refs/tags/v0.2.0.tar.gz
+sha256sum /tmp/nekonolock-0.2.0.tar.gz
 ```
 
-`source` の先頭を `$pkgname-$pkgver.tar.gz::.../archive/refs/tags/v$pkgver.tar.gz`
-に変え、`_commit` と `$_srcdir` を `$pkgname-$pkgver` に置き換える。
+`source` の先頭は `$pkgname-$pkgver.tar.gz::.../archive/refs/tags/v$pkgver.tar.gz`
+のままでよい。tag archive の sha256 だけを差し替える。
 
 ## 検証
 
