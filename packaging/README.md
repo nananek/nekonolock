@@ -145,6 +145,12 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 PIN が違う、公開鍵が読めないなどの場合は `PAM_IGNORE` を返し、通常の
 パスワード認証へフォールバックする。
 
+sudo の timestamp（既定 5 分）は PAM の外側で効く。timestamp が有効な間は
+sudo が PAM を呼ばないため、YubiKey PIN は再要求されない。YubiKey 成功も
+パスワード成功も同じ timestamp を更新する。毎回カードを要求するには
+sudoers で `Defaults timestamp_timeout=0` にする。ただし失敗時はパスワードへ
+フォールバックするため、これだけでは YubiKey 必須にはならない。
+
 設定は `/etc/nekonolock/sudo.toml`（root:root 0644）と、検証用の
 `/etc/nekonolock/sudo-key.asc`（ASCII armored、root 所有）。どちらも
 ユーザーの `~/.config/nekonolock/config.toml` とは独立している。

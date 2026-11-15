@@ -187,6 +187,13 @@ PIN の誤りはカード側のリトライ回数（3 回）だけを消費し�
 `sufficient` を `required` に変えるのではなく、まずこの既定動作
 （パスワードへのフォールバック）を理解してから別途検討する。
 
+sudo の timestamp（既定 5 分）は PAM モジュールの外側で効く。timestamp が
+有効な間は sudo が PAM を呼ばないため、YubiKey PIN も再要求されない。
+YubiKey 成功もパスワード成功も同じ timestamp を更新する。毎回カードを要求する
+には sudoers で `Defaults timestamp_timeout=0` にする必要がある。ただし現状は
+失敗時に `PAM_IGNORE` でパスワードへフォールバックするため、これだけでは
+YubiKey 必須にはならない。
+
 ## 6. プロトコル
 
 - `$XDG_RUNTIME_DIR/nekonolock/auth.sock`、`SOCK_SEQPACKET`。
