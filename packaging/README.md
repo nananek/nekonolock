@@ -48,17 +48,17 @@ makepkg --printsrcinfo > .SRCINFO
 （`cargo` を含む）。YubiKey を pcscd 経由で使うホストでは `pcsclite` と
 `ccid` も入れる（`optdepends`）。
 
-`source` は v0.2.1 から GitHub release tag の archive を pin している。
-v0.3.0 tag を切ったら `pkgver=0.3.0` にして `sha256sums` を再計算する。
+`source` は v0.3.0 から GitHub release tag の archive を pin している。
+次の tag (v0.4.0 など) を切ったら `pkgver` を上げて `sha256sums` を再計算する。
 v0.3.0 以降の archive には `crates/pam` が含まれるため、`build()` /
 `package()` の条件付き処理で `pam_nekonolock.so` も同梱される。
 `[nekono]` repo の `pkgs/nekonolock/` も同じ tag archive と sha256 を使う。
 tag archive の sha256 は次のように求める。
 
 ```sh
-curl -fsSL -o /tmp/nekonolock-0.3.0.tar.gz \
-  https://github.com/nananek/nekonolock/archive/refs/tags/v0.3.0.tar.gz
-sha256sum /tmp/nekonolock-0.3.0.tar.gz
+curl -fsSL -o /tmp/nekonolock-0.4.0.tar.gz \
+  https://github.com/nananek/nekonolock/archive/refs/tags/v0.4.0.tar.gz
+sha256sum /tmp/nekonolock-0.4.0.tar.gz
 ```
 
 `source` の先頭は `$pkgname-$pkgver.tar.gz::.../archive/refs/tags/v$pkgver.tar.gz`
