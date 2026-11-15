@@ -421,3 +421,16 @@
 - 却下: `system-auth` から `pam_pkcs11` を外す — SDDM の PIV が使えなくなる。
 - 補足: `account include login` は `pam_acct_mgmt` のため残す。`pam_faillock`
   の auth / account もそのまま効く。
+
+## ADR-0032: 認証ヘルパの systemd sandbox は使わない
+
+- 決定: `nekonolock-auth.service` は `UMask=0077` だけを残し、capability /
+  namespace / filesystem / syscall の制限を入れない。
+- 理由: user unit では `CapabilityBoundingSet=` が
+  `status=218/CAPABILITIES` で起動できず、`RestrictAddressFamilies=AF_UNIX`
+  などは PAM の setuid 経路 (`unix_chkpwd` / `pam_faillock`) を壊して
+  ロック画面のパスワードが通らなくなる。認証の可用性を優先する。
+- 却下: sandbox を維持して PAM を別プロセスに逃がす — 実装が大きく、
+  認証境界が増える。
+- 補足: `systemd-analyze security` の exposure は高くなるが、認証境界は
+  root 所有の設定・公開鍵と PAM 側で担保する。
