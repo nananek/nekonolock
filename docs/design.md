@@ -31,7 +31,6 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
 - OpenPGP applet によるチャレンジ署名認証。
 - PAM によるパスワード認証（設定で無効化可能）。
 - pacman package と ansible role による配布。
-- まず ayaka に適用し、安定後に inspiron へ展開する。
 
 **やらないこと**
 
@@ -78,7 +77,7 @@ UI は認証ロジックを持たない。UI と認証を分ける理由は次�
    `EXPKEYSIG` / `KEYEXPIRED` / `SIGEXPIRED` が無いことを確認する。
 
 カードを持つのは scdaemon だけになるため、pcscd のセッション競合は起きない。
-`pam_pkcs11` / `opensc` / `pcsc-card-watcher` は ayaka から外す。
+`pam_pkcs11` / `opensc` / `pcsc-card-watcher` は対象ホストから外す。
 
 PIN の入力は `--pinentry-mode loopback` でヘルパが渡す。カード側の PIN
 リトライ回数（3 回）を消費するのは「PIN モードとして送った入力」だけにする。
@@ -248,7 +247,7 @@ service = "nekonolock"
 
 - 認証は OpenPGP applet（scdaemon 経由）に統一する。
 - `pam_pkcs11`、`opensc`、`ykman` の常駐、`pam_yubikey` role の PAM 注入を
-  ayaka から外す。
+  対象ホストから外す。
 - `lock-release-scdaemon` のような scdaemon kill は廃止する。
 - `pcsc-shared` は使わない（`disable-ccid` のまま）。
 
@@ -280,7 +279,7 @@ service = "nekonolock"
   `crates/lock` の auth クライアントも、テスト内で socket を立てて往復を確認する。
 - E2E (Phase 3): Sway 1.12 の headless 出力（pixman）で、2 出力のロック、
   出力追加・削除、誤 PIN 後の維持、正しい PIN / パスワードでの解除を確認済み。
-- E2E (Phase 5): ayaka 実機で手動チェックリスト。
+- E2E: 実機で手動チェックリスト。
   - YubiKey 挿入 → PIN で解除
   - YubiKey 抜去 → パスワードで解除
   - パスワード無効設定で PIN のみ
@@ -363,8 +362,6 @@ packaging/     # PKGBUILD と ansible role のステージング
   （Arch Linux コンテナで makepkg / pacman -U / ansible-playbook）。
   v0.1.0 tag が無いため、PKGBUILD の source は Phase 3 の commit を pin
   している（[ADR-0021](decisions.md)）。）
-- [ ] Phase 5: ayaka 適用（pam_pkcs11 / hyprlock 廃止、swayidle から起動）
-- [ ] Phase 6: inspiron 適用（当面 swayidle 無効のまま）
 - [ ] Phase 7（任意）: sudo 用 PAM モジュール（同じヘルパを再利用）
 
 ## 14. 未確定事項
@@ -377,9 +374,9 @@ packaging/     # PKGBUILD と ansible role のステージング
   2026-11-14 時点では未確認だったが、Phase 3 で `swaymsg output HEADLESS-3
   unplug` により削除へ追従することを確認した。
 - 時計の日本語表示に CJK フォントが必要かどうか（必要なら依存を追加）。
-- HiDPI / fractional scaling。Phase 3 は configure のサイズを 1:1 のバッファに
-  描く（`wl_surface.set_buffer_scale` は未使用）。ayaka / inspiron の実機で
-  scale 1 以外を使う場合は Phase 5 までに対応する。
+- HiDPI / fractional scaling。configure のサイズを 1:1 のバッファに
+  描く（`wl_surface.set_buffer_scale` は未使用）。scale 1 以外の実機では
+  未対応。
 
 ## 15. 却下案
 

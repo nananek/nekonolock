@@ -7,7 +7,7 @@
 #
 # 使い方:
 #   bash spike/01-gpg-card-loopback.sh [KEY-FPR]
-#   （YubiKey を挿し、PIN を入力する。既定 FPR は ayaka の primary。）
+#   （YubiKey を挿し、PIN を入力する。既定 FPR は検証環境の primary。）
 #
 # PIN は argv に出さない。stdin 経由で gpg に渡す。
 set -euo pipefail

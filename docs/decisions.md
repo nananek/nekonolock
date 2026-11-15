@@ -26,7 +26,7 @@
 ## ADR-0003: YubiKey 認証は OpenPGP applet に一本化する
 
 - 決定: scdaemon 経由のチャレンジ署名で解除する。PIV / pam_pkcs11 /
-  opensc / pcsc-card-watcher は ayaka から外す。
+  opensc / pcsc-card-watcher は対象ホストから外す。
 - 理由: 競合の原因は「PC/SC リーダを握るクライアントが 2 系統ある」こと。
   認証を scdaemon 側に寄せれば、カードを持つプロセスが 1 つになり、
   競合が構造的に消える。SSH 署名・git commit 署名と同じ経路になる。
@@ -63,7 +63,7 @@
 
 - 決定: `wl_shm` のバッファに直接描画する。フォントは `fontdue`。
 - 理由: 表示するのは時計・入力ドット・短いメッセージだけ。GPU 文脈を作ると
-  ドライバ依存が増える（ayaka の AMD / inspiron の Intel で挙動を揃えたい）。
+  ドライバ依存が増える（AMD / Intel の実機で挙動を揃えたい）。
 - 却下: `cosmic-text` — シェーピングまで面倒を見るが、今の表示内容には過剰。
 - 却下: `tiny-skia` — 角丸矩形のために依存を増やす必要がない。
   矩形とグリフの合成は自前で足りる。
