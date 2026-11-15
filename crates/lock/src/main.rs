@@ -3,9 +3,9 @@
 //! `ext-session-lock-v1` で全出力をロックし、`nekonolock-auth` に認証を委ねる。
 //! UI は次の 3 層だけを描く。
 //!
-//! - 外周のモード色フレーム（太さはモードで変える）
-//! - 上部 20% のモード帯（`YubiKey PIN` / `Password`）
-//! - 中央の時計、入力ドット、状態メッセージ
+//! - 上端の accent line
+//! - 左上ラベル、右上 `LOCKED`、時計、日付
+//! - モード capsule（`YUBIKEY PIN` / `PASSWORD`）、入力欄、状態メッセージ
 //!
 //! 認証が成功するまで `SessionLock::unlock` を呼ばない（fail closed）。
 //!

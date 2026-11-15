@@ -25,19 +25,19 @@ impl Mode {
         }
     }
 
-    /// モード capsule に出す名前。
+    /// モード capsule に出す名前。画面のコピーはすべて大文字に揃える。
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pin => "YubiKey PIN",
-            Self::Password => "Password",
+            Self::Pin => "YUBIKEY PIN",
+            Self::Password => "PASSWORD",
         }
     }
 
     /// 入力欄の下に出す既定の案内。状態メッセージが無いときだけ使う。
     pub fn hint(self) -> &'static str {
         match self {
-            Self::Pin => "Touch the key, then enter your PIN",
-            Self::Password => "Enter your password",
+            Self::Pin => "TOUCH THE KEY, THEN ENTER YOUR PIN",
+            Self::Password => "ENTER YOUR PASSWORD",
         }
     }
 }
@@ -384,6 +384,14 @@ mod tests {
     #[test]
     fn starts_in_password_mode_until_status_arrives() {
         assert_eq!(state().mode(), Mode::Password);
+    }
+
+    #[test]
+    fn screen_copy_is_uppercase() {
+        for mode in [Mode::Pin, Mode::Password] {
+            assert_eq!(mode.label(), mode.label().to_uppercase());
+            assert_eq!(mode.hint(), mode.hint().to_uppercase());
+        }
     }
 
     #[test]

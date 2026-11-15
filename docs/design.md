@@ -106,9 +106,11 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 
 - 画面上端にモード色の細い accent line を引く。
 - 日付の下にモード capsule（丸い pill）を出す。モード色のドットと
-  `YubiKey PIN` / `Password` のラベルを置く。
+  `YUBIKEY PIN` / `PASSWORD` のラベルを置く。
 - 入力欄の枠と入力ドットもモード色にする。
 - 色だけに頼らない（ラベル・ドット・枠の 3 点で区別できる）。
+- 画面のコピー（左上ラベル、モード名、案内、状態メッセージ、日付、
+  下端の操作ヒント）はすべて大文字で出す。時計だけは `clock_format` のとおり。
 - 切替は即時反映し、入力中の文字列は破棄する（モード混乱を防ぐ）。
 - 点滅・明滅はしない（眩しさと混乱を避ける）。
 
@@ -179,7 +181,7 @@ clock_format    = "%H:%M"
 date_format     = "%A, %-d %B %Y"   # 描画時に大文字化する
 font            = "/usr/share/fonts/TTF/DejaVuSans.ttf"
 clock_font      = "/usr/share/fonts/TTF/DejaVuSans-ExtraLight.ttf"
-label           = "NEKONOLOCK"      # 左上の短いラベル。空なら描かない
+label           = "NEKONOLOCK"      # 左上の短いラベル。描画時に大文字化する
 background      = "#15181B"
 background_bottom = "#0B0D0F"
 foreground      = "#F2EFE7"
@@ -223,7 +225,7 @@ password_accent = "#A34A3A"
 - `openpgp = false` でパスワードのみにもできる。
 - 両方 `false` は起動時に拒否する。
 - `clock_format` / `date_format` は空でなく `chrono` が解釈できることを
-  起動時に確認する。`date_format` は描画時に大文字化する。
+  起動時に確認する。`date_format` と `label` は描画時に大文字化する。
 - `blank_after_sec` はロック中の無入力時間。経過すると画面を純黒にし、キー入力で
   戻す。`0` で無効。認証待ちの間は黒くしない。
 - `max_attempts` は連打抑止のクールダウン（§5.4）。

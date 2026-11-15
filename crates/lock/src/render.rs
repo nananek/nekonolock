@@ -145,6 +145,9 @@ fn parse(name: &str, value: &str) -> Result<Color, String> {
         .ok_or_else(|| format!("[ui] {name} を #rrggbb として解釈できない: {value}"))
 }
 
+/// 下端の操作ヒント。画面のコピーはすべて大文字に揃える。
+const BOTTOM_HINT: &str = "TAB  SWITCH MODE     /     ENTER  UNLOCK";
+
 /// 1 フレーム分の表示内容。
 pub struct View<'a> {
     pub mode: Mode,
@@ -279,14 +282,15 @@ impl Renderer {
         let small = (h * 0.0105).max(8.0);
         let tracking = h * 0.0024;
         if let Some(font) = self.font() {
-            if !view.label.is_empty() {
+            let label = view.label.to_uppercase();
+            if !label.is_empty() {
                 draw_text(
                     font,
                     canvas,
                     stride,
                     width,
                     height,
-                    view.label,
+                    &label,
                     margin,
                     top_y,
                     small,
@@ -492,21 +496,21 @@ impl Renderer {
             }
         }
 
-        // 状態メッセージ。無ければモードごとの案内。
+        // 状態メッセージ。無ければモードごとの案内。どちらも大文字で出す。
         if let Some(font) = self.font() {
             let (text, color) = if view.message.is_empty() {
-                (view.mode.hint(), theme.dim)
+                (view.mode.hint().to_string(), theme.dim)
             } else {
-                (view.message, theme.foreground)
+                (view.message.to_uppercase(), theme.foreground)
             };
-            let size = fit_size(font, text, h * 0.0146, w * 0.82, 0.0);
+            let size = fit_size(font, &text, h * 0.0146, w * 0.82, 0.0);
             draw_text(
                 font,
                 canvas,
                 stride,
                 width,
                 height,
-                text,
+                &text,
                 w / 2.0,
                 h * 0.6402,
                 size,
@@ -516,16 +520,15 @@ impl Renderer {
             );
 
             // 下端の操作ヒント。小さく、でも読み取れる濃さにする。
-            let bottom = "TAB  switch mode     /     ENTER  unlock";
             let tracking = h * 0.0010;
-            let size = fit_size(font, bottom, h * 0.0105, w * 0.9, tracking);
+            let size = fit_size(font, BOTTOM_HINT, h * 0.0105, w * 0.9, tracking);
             draw_text(
                 font,
                 canvas,
                 stride,
                 width,
                 height,
-                bottom,
+                BOTTOM_HINT,
                 w / 2.0,
                 h * 0.9238,
                 size,
@@ -1051,6 +1054,11 @@ mod tests {
                     .any(|pixel| pixel[3] == 0xff)
             );
         }
+    }
+
+    #[test]
+    fn bottom_hint_is_uppercase() {
+        assert_eq!(BOTTOM_HINT, BOTTOM_HINT.to_uppercase());
     }
 
     #[test]
