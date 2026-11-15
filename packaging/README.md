@@ -108,6 +108,11 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 - `nekonolock_pam_service` / `nekonolock_pam_include` は
   ファイル名・PAM サービス名として安全な文字（英数字、`_`、`.`、`-`）だけを
   受け付ける。`/etc/pam.d` の外へのパスや改行の注入を防ぐ。
+- `nekonolock_sway_config` は対象ユーザーとして編集する。root で play を
+  実行する場合は、そのユーザーへ切り替えられる become（sudo など）が必要。
+- `nekonolock_user` の既定は `ansible_user_id`。play 全体を `become: true` で
+  実行すると事実上のユーザーが root になるため、デスクトップのユーザーを
+  明示して渡す。
 - 実行中の `swayidle` は設定を読み直さない。変更は次回の sway 起動
   （再ログイン）から有効になる。role の適用後に即時反映したい場合は、
   ユーザーセッションで swayidle を再起動する。

@@ -115,15 +115,17 @@
     - nekonolock_sway.stat.exists
 
 # 既存の `exec swayidle ...` 行だけを置き換える。設定が無いホストでは何もしない。
+# ユーザーの file は root ではなく対象ユーザーとして編集する。root が
+# ユーザー所有の path を辿って書く経路を残さない。
 - name: Point swayidle at nekonolock
   ansible.builtin.lineinfile:
     path: "{{ nekonolock_sway_real.stdout }}"
     regexp: '^(\s*exec(?:_always)?\s+)swayidle\b.*$'
     line: '\1{{ nekonolock_swayidle_command }}'
-    owner: "{{ nekonolock_user }}"
-    group: "{{ nekonolock_user }}"
     backup: true
     backrefs: true
+  become: "{{ nekonolock_user != ansible_user_id }}"
+  become_user: "{{ nekonolock_user }}"
   when:
     - nekonolock_manage_swayidle | bool
     - nekonolock_sway.stat.exists
