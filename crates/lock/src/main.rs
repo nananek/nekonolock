@@ -51,9 +51,11 @@ use wayland_client::{
 
 const TICK: Duration = Duration::from_millis(250);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
-/// カード抜去を検知するための status 問い合わせ間隔。
-/// `gpg --card-status` は scdaemon とカードに触れるため、短くしない。
-const STATUS_INTERVAL: Duration = Duration::from_secs(10);
+/// カードがある間の status 問い合わせ間隔。抜去を 1 秒以内に画面へ反映する。
+/// `gpg --card-status` は scdaemon とカードに触れるため、これ以上短くしない。
+const STATUS_INTERVAL: Duration = Duration::from_secs(1);
+/// カードが無いと分かっている間の問い合わせ間隔。挿入の検知は急がない。
+const STATUS_INTERVAL_ABSENT: Duration = Duration::from_secs(10);
 
 fn main() {
     if let Err(err) = run() {
@@ -252,6 +254,8 @@ struct LockSurface {
 
 struct Pending {
     rx: Receiver<Outcome>,
+    /// 定期確認の status。応答は助言として扱い、ユーザーの操作を待たせない。
+    probe: bool,
 }
 
 /// 押しっぱなしのキーのリピート。calloop のタイマーを使わず、tick で進める。
@@ -376,19 +380,28 @@ impl App {
                 let _ = tx.send(auth::status(&socket, timeout));
             });
         match spawned {
-            Ok(_) => self.pending = Some(Pending { rx }),
+            Ok(_) => {
+                self.pending = Some(Pending {
+                    rx,
+                    probe: !announce,
+                })
+            }
             Err(err) => {
                 eprintln!("nekonolock: 認証スレッドを起動できない: {err}");
-                self.ui.helper_unavailable();
+                if announce {
+                    self.ui.helper_unavailable();
+                }
             }
         }
     }
 
-    /// ロック中にカードが抜けた場合に備え、低頻度で status を問い合わせる。
+    /// ロック中にカードが抜けた場合に備えて status を問い合わせる。
+    ///
+    /// カードがある間は 1 秒ごとに確認し、無いと分かった後は間隔を空ける。
     fn poll_card_status(&mut self, now: Instant) {
         if self.pending.is_some()
             || self.ui.is_busy()
-            || now.duration_since(self.last_status) < STATUS_INTERVAL
+            || now.duration_since(self.last_status) < status_interval(self.ui.card())
         {
             return;
         }
@@ -401,13 +414,17 @@ impl App {
             self.dirty = true;
             return;
         };
-        if self.pending.is_some() {
-            return;
+        match &self.pending {
+            // 認証の応答待ちなら二重送信しない。定期確認の応答待ちは捨てて
+            // 送信を優先する（Enter を取りこぼすとキーが効いていないように見える）。
+            Some(pending) if !pending.probe => return,
+            Some(_) | None => {}
         }
         let Some((kind, secret)) = self.ui.take_request(Instant::now()) else {
             self.dirty = true;
             return;
         };
+        self.pending = None;
         self.dirty = true;
 
         let timeout = self.auth_timeout;
@@ -418,7 +435,7 @@ impl App {
                 let _ = tx.send(auth::unlock(&socket, kind, secret, timeout));
             });
         match spawned {
-            Ok(_) => self.pending = Some(Pending { rx }),
+            Ok(_) => self.pending = Some(Pending { rx, probe: false }),
             Err(err) => {
                 eprintln!("nekonolock: 認証スレッドを起動できない: {err}");
                 self.ui.helper_unavailable();
@@ -431,8 +448,18 @@ impl App {
             return;
         };
         match pending.rx.try_recv() {
-            Ok(outcome) => self.handle_outcome(outcome),
+            Ok(outcome) => {
+                // 定期確認の失敗で入力中の秘密を消さない。送信時に改めて知らせる。
+                if pending.probe && !matches!(outcome, Outcome::Status { .. }) {
+                    eprintln!("nekonolock: 定期確認に失敗した（表示は変えない）");
+                    return;
+                }
+                self.handle_outcome(outcome);
+            }
             Err(TryRecvError::Empty) => self.pending = Some(pending),
+            Err(TryRecvError::Disconnected) if pending.probe => {
+                eprintln!("nekonolock: 定期確認のスレッドが結果を返さずに終了した");
+            }
             Err(TryRecvError::Disconnected) => self.handle_outcome(Outcome::Unavailable(
                 "認証スレッドが結果を返さずに終了した".to_string(),
             )),
@@ -752,6 +779,17 @@ fn is_repeatable(event: &KeyEvent) -> bool {
                 event.keysym,
                 Keysym::Return | Keysym::KP_Enter | Keysym::Tab | Keysym::Escape
             ))
+}
+
+/// カードの有無に応じた status の問い合わせ間隔。
+///
+/// 一度抜けた後は、挿し直しをすぐ PIN モードへ戻さない設計なので急がない。
+fn status_interval(card: Option<bool>) -> Duration {
+    if card == Some(false) {
+        STATUS_INTERVAL_ABSENT
+    } else {
+        STATUS_INTERVAL
+    }
 }
 
 /// 無入力タイマーが満了したか。認証待ちの間は黒くしない。
@@ -1134,5 +1172,12 @@ mod tests {
             Duration::from_secs(5),
             false
         ));
+    }
+
+    #[test]
+    fn status_interval_is_short_while_the_card_is_present() {
+        assert_eq!(status_interval(None), Duration::from_secs(1));
+        assert_eq!(status_interval(Some(true)), Duration::from_secs(1));
+        assert_eq!(status_interval(Some(false)), Duration::from_secs(10));
     }
 }
