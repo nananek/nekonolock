@@ -299,16 +299,24 @@ service = "nekonolock"
 crates/proto   # 要求/応答の型と socket ヘルパ
 crates/auth    # nekonolock-auth
 crates/lock    # nekonolock (UI)
-packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
+packaging/     # PKGBUILD と ansible role のステージング
 ```
 
-- pacman package `nekonolock`（[nekono] repo）。バイナリ 2 本と
-  `/etc/pam.d/nekonolock`、systemd-user unit 2 つ（socket activation）。
-  依存に `libxkbcommon` と `ttf-dejavu`（既定フォント）を入れる。
+- pacman package `nekonolock`（[nekono] repo）。バイナリ 2 本、
+  `/etc/pam.d/nekonolock`、systemd-user unit 2 つ（socket activation、
+  `/usr/lib/systemd/user/`）、LICENSE を同梱する。
+  依存は `gnupg` / `libxkbcommon` / `pam` / `ttf-dejavu`（既定フォント）。
+  YubiKey を pcscd 経由で使うホスト向けに `pcsclite` / `ccid` を
+  optdepends に置く。
+- socket unit は `ListenSequentialPacket=` を使う。`ListenStream=` は
+  `SOCK_STREAM` を作り、ヘルパの種別検証で起動できない（[ADR-0019](decisions.md)）。
 - ansible role `nekonolock`（ansible-nekonodesk）: package 導入、
-  `/etc/pam.d/nekonolock`、`/etc/systemd/user/nekonolock-auth.{socket,service}`、
-  `swayidle` の lock コマンド差し替え。
-- ユーザー設定（TOML）は dotfiles 管理。systemd-user unit は ansible 管理。
+  `/etc/pam.d/nekonolock`、`nekonolock-auth.socket` の enable、
+  `swayidle` の lock コマンド差し替え。unit は package の 1 か所だけに置き、
+  role は enable する（[ADR-0019](decisions.md)）。
+- ユーザー設定（TOML）は dotfiles 管理。
+- `packaging/` は移植用のステージング。pacman repo と ansible repo への
+  移植手順は `packaging/README.md` に書く。
 
 ## 13. ロードマップ
 
@@ -347,7 +355,14 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
   正しい PIN / パスワードでの解除を確認。UI の自動テストは
   `cargo test --workspace`。再現手順は `spike/03-lock-ui-sway.sh`
   （Docker + モック認証ヘルパ）。）
-- [ ] Phase 4: packaging と ansible role
+- [x] Phase 4: packaging と ansible role
+  （2026-11-15 実装。`packaging/PKGBUILD`、`/etc/pam.d/nekonolock`、
+  `ListenSequentialPacket=` の systemd user unit 2 本、ansible role
+  `nekonolock`。role は package 導入、PAM 配置、socket の enable、
+  swayidle の差し替えを行う。検証は `spike/04-package-ansible.sh`
+  （Arch Linux コンテナで makepkg / pacman -U / ansible-playbook）。
+  v0.1.0 tag が無いため、PKGBUILD の source は Phase 3 の commit を pin
+  している（[ADR-0021](decisions.md)）。）
 - [ ] Phase 5: ayaka 適用（pam_pkcs11 / hyprlock 廃止、swayidle から起動）
 - [ ] Phase 6: inspiron 適用（当面 swayidle 無効のまま）
 - [ ] Phase 7（任意）: sudo 用 PAM モジュール（同じヘルパを再利用）

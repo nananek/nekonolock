@@ -193,3 +193,45 @@
   読み込みの遅延がそのまま「ロックされない時間」になる。
 - 補足: フォールバック中は文字が出ない。設定とフォントが読めた時点で再描画する。
   設定を読めない間は `CONFIG ERROR - LOCKED` を出し、ログにも理由を残す。
+
+## ADR-0019: systemd user unit は package が持ち、ansible は enable だけする
+
+- 決定: `nekonolock-auth.{socket,service}` は pacman package が
+  `/usr/lib/systemd/user/` に配置する。ansible role は unit を
+  `/etc/systemd/user/` へ複製せず、`nekonolock-auth.socket` を enable +
+  start するだけにする。
+- 理由: 同じ unit を package と role の両方に置くと、片方の更新で内容が
+  drift する。Arch の慣例では package が `/usr/lib/systemd/user/` に置き、
+  管理者は `/etc/systemd/user/` で上書きする。今回はホストごとに変える
+  項目が無いので上書きしない。
+- 却下: role が `/etc/systemd/user/` に template を置く — package 更新と
+  role 更新の二重管理になる。
+- 補足: 設計 §12 の初版は package と role の両方に unit を列挙していたが、
+  実装で 1 か所に寄せた。role はユーザー manager が動いていない場合に
+  socket を有効化せず警告する（プロビジョニング中の失敗を避ける）。
+
+## ADR-0020: PAM は auth と account の両方で login を include する
+
+- 決定: `/etc/pam.d/nekonolock` を `auth include login` と
+  `account include login` の 2 行にする。
+- 理由: 認証ヘルパは `pam_authenticate` の後に `pam_acct_mgmt` を呼ぶ。
+  `account` が無いとアカウントのロックや期限切れを確認できない。
+  `login` は `system-login` -> `system-auth` を辿るので、Arch の
+  `pam_faillock` が auth / account の両方で効く。
+- 却下: `auth include login` だけにする — 設計 §5.2 の記述に近いが、
+  `pam_acct_mgmt` の結果を正しく扱えない。
+- 補足: package の既定ファイルと ansible role の template は同じ内容に
+  する。`packaging/` の検証で両方を確認する。
+
+## ADR-0021: v0.1.0 tag ができるまで source は commit を pin する
+
+- 決定: Phase 4 の PKGBUILD は `nananek/nekonolock` の Phase 3 コード
+  commit の archive を sha256 で pin する。v0.1.0 tag を切ったら tag
+  archive に切り替え、sha256 を再計算する。
+- 理由: まだ tag / release が無い。pacman repo は `SKIP` checksum を
+  認めないため、tag が無い状態でも固定できる commit archive を使う。
+  コードは Phase 4 で変わらないので、Phase 3 commit のビルドで目的の
+  バイナリになる。
+- 却下: `sha256sums=('SKIP')` — supply-chain の固定が消える。
+- 補足: 切り替え手順は `packaging/README.md`。commit pin のままでも
+  `.SRCINFO` / `.deps.lock` は生成できる。

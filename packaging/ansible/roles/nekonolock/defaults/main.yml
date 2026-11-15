@@ -1,0 +1,25 @@
+---
+# nekonolock を動かすユーザー。単一 UID 前提（設計 §3）。
+nekonolock_user: "{{ ansible_user_id }}"
+
+nekonolock_package: nekonolock
+# /etc/pam.d 配下のファイル名。'/' や改行は role が拒否する。
+nekonolock_pam_service: nekonolock
+# login は system-login -> system-auth を辿るため、pam_faillock が効く。
+nekonolock_pam_include: login
+
+# ログイン中のユーザーセッションで socket activation を有効にする。
+nekonolock_enable_user_socket: true
+
+# swayidle の lock コマンドを nekonolock に差し替える。
+nekonolock_manage_swayidle: true
+nekonolock_sway_config: "~{{ nekonolock_user }}/.config/sway/config"
+nekonolock_idle_timeout: 300
+nekonolock_dpms_timeout: 600
+# 差し替え後の 1 行。exec は lineinfile 側で保持する。
+nekonolock_swayidle_command: >-
+  swayidle -w
+  timeout {{ nekonolock_idle_timeout }} 'nekonolock'
+  timeout {{ nekonolock_dpms_timeout }} 'swaymsg "output * power off"'
+  resume 'swaymsg "output * power on"'
+  before-sleep 'nekonolock'
