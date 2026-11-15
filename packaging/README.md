@@ -81,6 +81,8 @@ bash spike/04-package-ansible.sh
 前提は次のとおり。
 
 - `[nekono]` repo が登録済みで、`nekonolock` package を install できる。
+- ansible は `community.general` の `pacman` モジュールを使う
+  （Arch の `ansible` package には含まれる。`ansible-core` だけでは足りない）。
 - role は対象ユーザーのログイン中に実行する。ユーザー manager が無い場合は
   socket を有効化せず警告する。
 - `~/.config/nekonolock/config.toml` は dotfiles 管理。role は触らない。
