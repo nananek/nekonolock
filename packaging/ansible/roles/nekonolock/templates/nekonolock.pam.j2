@@ -1,0 +1,8 @@
+#%PAM-1.0
+# Managed by ansible (role nekonolock). Do not edit by hand.
+#
+# login は system-login -> system-auth を辿る。pam_faillock の
+# auth / account がそのまま効く。認証ヘルパは pam_authenticate の後に
+# pam_acct_mgmt を呼ぶため、account も必要。
+auth     include {{ nekonolock_pam_include }}
+account  include {{ nekonolock_pam_include }}

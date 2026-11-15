@@ -1,0 +1,85 @@
+---
+# ユーザー名から home / uid を引く。getent は register した facts に入る。
+- name: Look up the nekonolock user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ nekonolock_user }}"
+    fail_key: true
+  register: nekonolock_getent
+
+- name: Record the target user's home and uid
+  ansible.builtin.set_fact:
+    nekonolock_home: "{{ nekonolock_getent.ansible_facts.getent_passwd[nekonolock_user][4] }}"
+    nekonolock_uid: "{{ nekonolock_getent.ansible_facts.getent_passwd[nekonolock_user][1] }}"
+
+- name: Install the nekonolock package
+  ansible.builtin.package:
+    name: "{{ nekonolock_package }}"
+    state: present
+
+# package も /etc/pam.d/nekonolock を同梱するが、PAM はホストの認証方針なので
+# ansible 側を正にする。pam_faillock の有無などで include 先を変えられる。
+- name: Deploy the PAM service for nekonolock
+  ansible.builtin.template:
+    src: nekonolock.pam.j2
+    dest: "/etc/pam.d/{{ nekonolock_pam_service }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+
+- name: Check whether the user manager is running
+  ansible.builtin.stat:
+    path: "/run/user/{{ nekonolock_uid }}/systemd/private"
+  register: nekonolock_user_manager
+
+- name: Enable and start nekonolock-auth.socket
+  ansible.builtin.systemd_service:
+    name: nekonolock-auth.socket
+    scope: user
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  become_user: "{{ nekonolock_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ nekonolock_uid }}"
+  when:
+    - nekonolock_enable_user_socket | bool
+    - nekonolock_user_manager.stat.exists
+
+- name: Warn when the user manager is not running
+  ansible.builtin.debug:
+    msg: >-
+      /run/user/{{ nekonolock_uid }}/systemd/private が無いため
+      nekonolock-auth.socket を有効化していない。ログイン中に role を再実行するか、
+      `systemctl --user enable --now nekonolock-auth.socket` を実行する。
+  when:
+    - nekonolock_enable_user_socket | bool
+    - not nekonolock_user_manager.stat.exists
+
+- name: Check for the sway config
+  ansible.builtin.stat:
+    path: "{{ nekonolock_sway_config }}"
+  register: nekonolock_sway
+
+# 既存の `exec swayidle ...` 行だけを置き換える。設定が無いホストでは何もしない。
+- name: Point swayidle at nekonolock
+  ansible.builtin.lineinfile:
+    path: "{{ nekonolock_sway_config }}"
+    regexp: '^(\s*exec(?:_always)?\s+)swayidle\b.*$'
+    line: '\1{{ nekonolock_swayidle_command }}'
+    owner: "{{ nekonolock_user }}"
+    group: "{{ nekonolock_user }}"
+    backup: true
+    backrefs: true
+  when:
+    - nekonolock_manage_swayidle | bool
+    - nekonolock_sway.stat.exists
+
+- name: Warn when the sway config is missing
+  ansible.builtin.debug:
+    msg: "{{ nekonolock_sway_config }} が無いため swayidle を差し替えていない"
+  when:
+    - nekonolock_manage_swayidle | bool
+    - not nekonolock_sway.stat.exists
