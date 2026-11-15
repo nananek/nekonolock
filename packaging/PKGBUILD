@@ -4,7 +4,7 @@
 # workspace から UI (nekonolock) と認証ヘルパ (nekonolock-auth) をビルドする。
 # systemd user unit 2 本（socket activation）と /etc/pam.d/nekonolock を同梱し、
 # 既定フォント ttf-dejavu と libxkbcommon を depends に置く（設計 §12）。
-# ソースに crates/pam があれば sudo 用の pam_nekonolock.so も入れる（Phase 7）。
+# ソースに crates/pam があれば sudo 用の pam_nekonolock.so も入れる。
 #
 # 配布先は [nekono] repo。移植手順と検証方法は packaging/README.md。
 
@@ -51,8 +51,8 @@ prepare() {
 build() {
     cd "$pkgname-$pkgver"
     local -a crates=(-p nekonolock -p nekonolock-auth)
-    # v0.2.1 の tag archive には crates/pam が無い。Phase 7 を含む tag からは
-    # 自動で sudo 用 PAM モジュールもビルドする。
+    # 古い tag archive には crates/pam が無い。ある場合だけ sudo 用の
+    # PAM モジュールもビルドする。
     if [[ -d crates/pam ]]; then
         crates+=(-p pam-nekonolock)
     fi

@@ -130,7 +130,7 @@
     - nekonolock_manage_swayidle | bool
     - nekonolock_sway.stat.exists
 
-# --- sudo 用 PAM モジュール（Phase 7） -------------------------------------
+# --- sudo 用 PAM モジュール -------------------------------------------------
 
 # 有効にするときだけ、鍵と PAM の設定を検証する。無効時は何も変えない。
 - name: Validate sudo PAM inputs

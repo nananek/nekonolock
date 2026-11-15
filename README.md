@@ -4,10 +4,9 @@ Sway (wlroots) 用の小さなスクリーンロッカー。YubiKey の OpenPGP 
 パスワードの両方で解除でき、scdaemon と pcscd のカード取り合いを
 構造的に起こさないことを目的とする。
 
-**状態: v0.2.1 リリース済み。UI は Ink テーマ、HiDPI、無操作時の純黒に
-対応。テキストは共通のベースラインに載せ、小文字と降下部を正しく描く。
-ソースには Phase 7 の sudo 用 PAM モジュール（`pam_nekonolock.so`）も
-含む。package への同梱は次回の tag から。**
+v0.3.0 では sudo 用 PAM モジュール `pam_nekonolock.so` を package に同梱する。
+sudo はユーザーの `nekonolock-auth` socket を使わず、root 所有の設定と
+公開鍵だけで認証する。
 
 既定は濃いチャコールの **Ink**。明るい **Paper** は `[ui]` の色と時計フォントを
 差し替えて使う。どちらも上端の accent line、モード capsule、入力欄の枠で
@@ -22,11 +21,13 @@ PIN / Password を区別する。
 画像は `cargo run -p nekonolock --example preview` で `docs/images/` に再生成する。
 HiDPI は `wl_output.scale` の整数倍でバッファを描き、`set_buffer_scale` で
 論理サイズに戻す。無操作時は `[ui] blank_after_sec` 秒で純黒にし、キー入力で戻す。
+カードが抜けたときは、パスワードが有効なら自動でパスワードモードへ切り替える。
 
 `packaging/` に pacman package と ansible role のステージングを置いている。
 package は `nekonolock` / `nekonolock-auth`、`/etc/pam.d/nekonolock`、
-`SOCK_SEQPACKET` の systemd user unit 2 本を含む。ansible role は package
-導入、PAM 配置、socket の enable、swayidle の差し替えを行う。
+`SOCK_SEQPACKET` の systemd user unit 2 本、sudo 用の `pam_nekonolock.so` と
+設定例を含む。ansible role は package 導入、PAM 配置、socket の enable、
+swayidle の差し替えを行う。
 
 ```sh
 # 単体テストと結合テスト（モックバックエンド）
@@ -47,6 +48,9 @@ bash spike/03-lock-ui-sway.sh
 
 # package と ansible role の E2E（Arch Linux コンテナ）
 bash spike/04-package-ansible.sh
+
+# sudo 用 PAM モジュールの E2E（Docker）
+bash spike/05-sudo-pam.sh
 ```
 
 ビルドには `libxkbcommon` の開発用ファイル（Arch: `libxkbcommon`、

@@ -171,16 +171,25 @@ impl UiState {
         self.clear_secret();
     }
 
-    /// status の結果を反映する。初回だけカードの有無で既定モードを選び直す。
+    /// status の結果を反映する。
+    ///
+    /// 初回はカードの有無で既定モードを選ぶ。以降はカードが抜けたときだけ
+    /// 一方向にパスワードへ切り替える（挿し直しても PIN には戻さない）。
     pub fn apply_status(&mut self, card: bool, kinds: &[AuthKind]) {
-        let first = self.card.is_none();
+        let previous = self.card;
         self.card = Some(card);
         self.methods = Methods::from_status(kinds);
 
-        if first {
+        if previous.is_none() {
             let desired = self.methods.default_mode(Some(card));
             if desired != self.mode {
                 self.switch_mode(desired);
+            }
+        } else if previous == Some(true) && !card {
+            if self.methods.password {
+                self.switch_mode(Mode::Password);
+            } else {
+                self.clear_secret();
             }
         }
         if !self.methods.has(self.mode) {
@@ -425,6 +434,36 @@ mod tests {
         let mut ui = state();
         ui.apply_status(false, &[AuthKind::Pin]);
         assert_eq!(ui.mode(), Mode::Pin);
+        assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
+    }
+
+    #[test]
+    fn card_removal_switches_to_password_and_clears_input() {
+        let mut ui = state();
+        ui.apply_status(true, &[AuthKind::Pin, AuthKind::Password]);
+        assert_eq!(ui.mode(), Mode::Pin);
+        ui.push_char('1');
+        assert_eq!(ui.secret(), "1");
+
+        ui.apply_status(false, &[AuthKind::Pin, AuthKind::Password]);
+        assert_eq!(ui.mode(), Mode::Password);
+        assert_eq!(ui.secret(), "");
+        assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
+
+        // カードを挿し直しても PIN には戻さない。
+        ui.apply_status(true, &[AuthKind::Pin, AuthKind::Password]);
+        assert_eq!(ui.mode(), Mode::Password);
+    }
+
+    #[test]
+    fn card_removal_keeps_pin_and_clears_input_when_password_is_disabled() {
+        let mut ui = state();
+        ui.apply_status(true, &[AuthKind::Pin]);
+        ui.push_char('1');
+
+        ui.apply_status(false, &[AuthKind::Pin]);
+        assert_eq!(ui.mode(), Mode::Pin);
+        assert_eq!(ui.secret(), "");
         assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
     }
 

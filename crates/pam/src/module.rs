@@ -144,6 +144,7 @@ unsafe fn authenticate_inner(
     let signer = GpgCard::new(&file.sudo.key, timeout)
         .with_program(GPG_PATH)
         .with_identity(identity.clone())
+        .with_no_options(true)
         .with_scrubbed_env(true);
 
     if !signer.present() {

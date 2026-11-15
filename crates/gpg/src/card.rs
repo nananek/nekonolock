@@ -123,8 +123,9 @@ impl GpgCard {
         }
     }
 
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
+    /// 子プロセスの環境と実行ユーザーを設定する。gpg と gpg-connect-agent で共有する。
+    fn base_command(&self, program: &Path) -> Command {
+        let mut command = Command::new(program);
         if self.scrub_env {
             command.env_clear();
             command.env("PATH", "/usr/bin:/bin");
@@ -145,7 +146,11 @@ impl GpgCard {
         if self.full_root {
             switch_identity(&mut command, 0, 0);
         }
+        command
+    }
 
+    fn command(&self) -> Command {
+        let mut command = self.base_command(&self.program);
         if let Some(homedir) = &self.homedir {
             command.arg("--homedir").arg(homedir);
         }
@@ -172,6 +177,69 @@ impl GpgCard {
             }
             None => Ok(tempfile::Builder::new().prefix(prefix).tempdir()?),
         }
+    }
+
+    /// 設定鍵の keygrip を公開鍵から求める。
+    fn keygrips(&self) -> Result<Vec<String>, CardError> {
+        let mut command = self.command();
+        command
+            .args([
+                "--batch",
+                "--no-tty",
+                "--with-colons",
+                "--with-keygrip",
+                "--list-keys",
+            ])
+            .arg(&self.key);
+
+        let output = match run_command(command, None, self.timeout) {
+            Ok(output) => output,
+            Err(RunError::Timeout) => return Err(CardError::Timeout),
+            Err(RunError::Io(err)) => return Err(CardError::Unavailable(err.to_string())),
+        };
+        if !output.status.success() {
+            return Err(CardError::Unavailable(last_line_or(
+                &output.stderr,
+                "gpg が鍵を列挙できなかった",
+            )));
+        }
+
+        let grips = parse_keygrips(&String::from_utf8_lossy(&output.stdout));
+        if grips.is_empty() {
+            return Err(CardError::Unavailable(
+                "設定鍵の keygrip を取得できない".to_string(),
+            ));
+        }
+        Ok(grips)
+    }
+
+    /// gpg-agent のパスフレーズキャッシュを署名前に消す。
+    ///
+    /// gpg-agent は一度成功した PIN をキャッシュし、キャッシュが温まっている間は
+    /// 間違った PIN でも署名を通す。PIN を第二要素として扱うため、署名のたびに
+    /// 対象鍵のキャッシュを無効化する。
+    fn clear_cached_passphrase(&self) -> Result<(), CardError> {
+        let program = self.program.with_file_name("gpg-connect-agent");
+        for grip in self.keygrips()? {
+            let mut command = self.base_command(&program);
+            command
+                .arg("--no-history")
+                .arg(format!("CLEAR_PASSPHRASE --mode=normal {grip}"))
+                .arg("/bye");
+
+            let output = match run_command(command, None, self.timeout) {
+                Ok(output) => output,
+                Err(RunError::Timeout) => return Err(CardError::Timeout),
+                Err(RunError::Io(err)) => return Err(CardError::Unavailable(err.to_string())),
+            };
+            if !output.status.success() {
+                return Err(CardError::Unavailable(last_line_or(
+                    &output.stderr,
+                    "gpg-agent のキャッシュを消せなかった",
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// 公開鍵のバイト列を `homedir` に取り込む。
@@ -252,6 +320,8 @@ impl CardSigner for GpgCard {
     }
 
     fn sign(&self, challenge: &[u8], pin: &str) -> Result<Vec<u8>, CardError> {
+        self.clear_cached_passphrase()?;
+
         let dir = self.private_tempdir("nekonolock-sign-")?;
         let challenge_path = dir.path().join("challenge");
         let signature_path = dir.path().join("challenge.sig");
@@ -342,6 +412,18 @@ fn normalize_key(key: &str) -> String {
     key.trim().trim_end_matches('!').to_string()
 }
 
+/// `gpg --with-colons --with-keygrip --list-keys` の出力から keygrip を取り出す。
+fn parse_keygrips(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix("grp:"))
+        .filter_map(|rest| rest.split(':').nth(8))
+        .map(str::trim)
+        .filter(|grip| !grip.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// `gpg --card-status` の出力や VALIDSIG の fingerprint と設定鍵を比べる。
 /// 設定は短い key ID でもよいので、空白を除いて大文字化したうえで照合する。
 fn key_matches(candidate: &str, key: &str) -> bool {
@@ -405,6 +487,7 @@ fn classify_sign_failure(stderr: &str) -> CardError {
     let lower = stderr.to_ascii_lowercase();
     if lower.contains("bad pin")
         || lower.contains("invalid pin")
+        || lower.contains("bad passphrase")
         || lower.contains("pin blocked")
         || lower.contains("card is blocked")
     {
@@ -562,6 +645,10 @@ mod tests {
             CardError::BadPin
         ));
         assert!(matches!(
+            classify_sign_failure("gpg: signing failed: Bad passphrase"),
+            CardError::BadPin
+        ));
+        assert!(matches!(
             classify_sign_failure("gpg: signing failed: Card is blocked"),
             CardError::BadPin
         ));
@@ -607,5 +694,25 @@ mod tests {
     fn normalize_key_strips_suffix() {
         assert_eq!(normalize_key(" ABCD! "), "ABCD");
         assert_eq!(normalize_key(""), "");
+    }
+
+    #[test]
+    fn parses_keygrips_from_colons_output() {
+        let output = "\
+pub:-:255:22:8169485A377499E4:1794735933:1794822333::-:::scSC:::::ed25519:::0:
+fpr:::::::::E03DF3B6B0F8777456708F568169485A377499E4:
+grp:::::::::9195E7B9B80CA0AD04F0859DD4C7F932E9AD3464:
+sub:-:255:22:1111111111111111:1794735933:1794822333:::::s:::::ed25519:::0:
+fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:
+grp:::::::::BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB:
+";
+        assert_eq!(
+            parse_keygrips(output),
+            [
+                "9195E7B9B80CA0AD04F0859DD4C7F932E9AD3464",
+                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            ]
+        );
+        assert!(parse_keygrips("pub:-:255:22:ABCD::::\n").is_empty());
     }
 }

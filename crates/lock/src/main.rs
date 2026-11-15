@@ -51,6 +51,9 @@ use wayland_client::{
 
 const TICK: Duration = Duration::from_millis(250);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+/// カード抜去を検知するための status 問い合わせ間隔。
+/// `gpg --card-status` は scdaemon とカードに触れるため、短くしない。
+const STATUS_INTERVAL: Duration = Duration::from_secs(10);
 
 fn main() {
     if let Err(err) = run() {
@@ -99,6 +102,7 @@ fn run() -> Result<()> {
         socket: None,
         status_timeout: STATUS_TIMEOUT,
         auth_timeout: Duration::from_secs(60),
+        last_status: Instant::now(),
         session_lock: None,
         surfaces: Vec::new(),
         keyboard: None,
@@ -212,6 +216,7 @@ struct App {
     socket: Option<PathBuf>,
     status_timeout: Duration,
     auth_timeout: Duration,
+    last_status: Instant,
     session_lock: Option<SessionLock>,
     surfaces: Vec<LockSurface>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -340,15 +345,27 @@ impl App {
     }
 
     fn queue_status(&mut self) {
+        self.queue_status_with(true);
+    }
+
+    /// status を問い合わせる。`announce` が false のときは入力中でも邪魔をせず、
+    /// カード抜去の検知だけを行う。
+    fn queue_status_with(&mut self, announce: bool) {
         let Some(socket) = self.socket.clone() else {
             self.ui.helper_unavailable();
             self.dirty = true;
             return;
         };
-        if self.pending.is_some() || self.ui.is_busy() {
+        if self.pending.is_some() {
             return;
         }
-        self.ui.begin_status();
+        if announce {
+            if self.ui.is_busy() {
+                return;
+            }
+            self.ui.begin_status();
+        }
+        self.last_status = Instant::now();
         self.dirty = true;
 
         let timeout = self.status_timeout;
@@ -365,6 +382,17 @@ impl App {
                 self.ui.helper_unavailable();
             }
         }
+    }
+
+    /// ロック中にカードが抜けた場合に備え、低頻度で status を問い合わせる。
+    fn poll_card_status(&mut self, now: Instant) {
+        if self.pending.is_some()
+            || self.ui.is_busy()
+            || now.duration_since(self.last_status) < STATUS_INTERVAL
+        {
+            return;
+        }
+        self.queue_status_with(false);
     }
 
     fn submit(&mut self) {
@@ -434,7 +462,7 @@ impl App {
 
     fn unlock_and_exit(&mut self) {
         self.unlocked = true;
-        // 成功経路でも入力欄の秘密を残さない（設計 §5.4）。
+        // 成功経路でも入力欄の秘密を残さない。
         self.ui.clear_secret();
         if let Some(lock) = self.session_lock.take() {
             lock.unlock();
@@ -454,6 +482,7 @@ impl App {
         let date = clock::format_now(&self.date_format);
         let status = self.ui.status_line(now);
         let mut changed = self.advance_repeat(now);
+        self.poll_card_status(now);
         if clock != self.clock_text {
             self.clock_text = clock;
             changed = true;
@@ -716,11 +745,6 @@ impl App {
 }
 
 /// 押しっぱなしで繰り返してよいキー。Enter / Tab / Esc は繰り返さない。
-/// 無入力タイマーが満了したか。認証待ちの間は黒くしない。
-fn blank_due(now: Instant, last_activity: Instant, blank_after: Duration, pending: bool) -> bool {
-    !blank_after.is_zero() && !pending && now.duration_since(last_activity) >= blank_after
-}
-
 fn is_repeatable(event: &KeyEvent) -> bool {
     matches!(event.keysym, Keysym::BackSpace)
         || (event.utf8.is_some()
@@ -728,6 +752,11 @@ fn is_repeatable(event: &KeyEvent) -> bool {
                 event.keysym,
                 Keysym::Return | Keysym::KP_Enter | Keysym::Tab | Keysym::Escape
             ))
+}
+
+/// 無入力タイマーが満了したか。認証待ちの間は黒くしない。
+fn blank_due(now: Instant, last_activity: Instant, blank_after: Duration, pending: bool) -> bool {
+    !blank_after.is_zero() && !pending && now.duration_since(last_activity) >= blank_after
 }
 
 impl SessionLockHandler for App {
