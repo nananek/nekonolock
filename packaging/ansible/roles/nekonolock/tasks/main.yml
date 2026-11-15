@@ -1,4 +1,18 @@
 ---
+# ロール変数は root で /etc とユーザーの home に書くため、パスとして安全な
+# 文字だけを受け付ける。service 名に '/' や改行を許すと /etc/pam.d の外や
+# PAM 行の注入になる。
+- name: Validate role inputs
+  ansible.builtin.assert:
+    that:
+      - nekonolock_pam_service is match('^[A-Za-z0-9_.-]+$')
+      - nekonolock_pam_include is match('^[A-Za-z0-9_.-]+$')
+      - nekonolock_user is match('^[A-Za-z0-9_.@-]+$')
+    fail_msg: >-
+      nekonolock_pam_service / nekonolock_pam_include / nekonolock_user は
+      ファイル名・PAM サービス名として安全な文字だけにする。
+  tags: always
+
 # ユーザー名から home / uid を引く。getent は register した facts に入る。
 - name: Look up the nekonolock user
   ansible.builtin.getent:
@@ -61,12 +75,49 @@
 - name: Check for the sway config
   ansible.builtin.stat:
     path: "{{ nekonolock_sway_config }}"
+    follow: false
   register: nekonolock_sway
+
+# 自動ロックの設定漏れを黙って成功にしない（設計の fail closed）。
+- name: Fail when the sway config is missing
+  ansible.builtin.fail:
+    msg: >-
+      {{ nekonolock_sway_config }} が無いため swayidle を設定できない。
+      sway を使わないホストでは nekonolock_manage_swayidle: false にする。
+  when:
+    - nekonolock_manage_swayidle | bool
+    - not nekonolock_sway.stat.exists
+
+# symlink は dotfiles 管理でよく使うので、実体がユーザーの home 内にある
+# 場合だけ許可する。root が home 外を指す symlink を辿って書かない。
+- name: Resolve the sway config
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - -e
+      - "{{ nekonolock_sway_config }}"
+  register: nekonolock_sway_real
+  changed_when: false
+  when:
+    - nekonolock_manage_swayidle | bool
+    - nekonolock_sway.stat.exists
+
+- name: Refuse a sway config outside the user's home
+  ansible.builtin.assert:
+    that:
+      - nekonolock_sway_real.rc == 0
+      - nekonolock_sway_real.stdout is match('^' ~ (nekonolock_home | regex_escape) ~ '/')
+    fail_msg: >-
+      {{ nekonolock_sway_config }} の実体が {{ nekonolock_home }} の外を指している。
+      root が home 外のファイルを書き換えないよう拒否する。
+  when:
+    - nekonolock_manage_swayidle | bool
+    - nekonolock_sway.stat.exists
 
 # 既存の `exec swayidle ...` 行だけを置き換える。設定が無いホストでは何もしない。
 - name: Point swayidle at nekonolock
   ansible.builtin.lineinfile:
-    path: "{{ nekonolock_sway_config }}"
+    path: "{{ nekonolock_sway_real.stdout }}"
     regexp: '^(\s*exec(?:_always)?\s+)swayidle\b.*$'
     line: '\1{{ nekonolock_swayidle_command }}'
     owner: "{{ nekonolock_user }}"
@@ -76,10 +127,3 @@
   when:
     - nekonolock_manage_swayidle | bool
     - nekonolock_sway.stat.exists
-
-- name: Warn when the sway config is missing
-  ansible.builtin.debug:
-    msg: "{{ nekonolock_sway_config }} が無いため swayidle を差し替えていない"
-  when:
-    - nekonolock_manage_swayidle | bool
-    - not nekonolock_sway.stat.exists

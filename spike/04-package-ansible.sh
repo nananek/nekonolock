@@ -131,7 +131,7 @@ fi
 check "systemd-analyze verify" "[ $verify_rc -eq 0 ]"
 
 # 2. ansible role。package はすでに入っているので、PAM と swayidle を確認する。
-cat >/work/sway-config <<'SWAY'
+cat >/root/sway-config <<'SWAY'
 set $mod Mod4
 exec swayidle -w timeout 300 'swaylock -f' timeout 600 'swaymsg "output * power off"' resume 'swaymsg "output * power on"' before-sleep 'swaylock -f'
 bindsym $mod+Escape exec swaylock
@@ -143,7 +143,7 @@ cat >/work/playbook.yml <<'PLAY'
   vars:
     nekonolock_user: root
     nekonolock_enable_user_socket: false
-    nekonolock_sway_config: /work/sway-config
+    nekonolock_sway_config: /root/sway-config
   roles:
     - nekonolock
 PLAY
@@ -157,11 +157,11 @@ else
     fail=1
 fi
 check "swayidle が nekonolock になった" \
-    "grep -q 'timeout 300 .nekonolock.' /work/sway-config"
+    "grep -q 'timeout 300 .nekonolock.' /root/sway-config"
 check "swayidle の before-sleep も nekonolock" \
-    "grep -q 'before-sleep .nekonolock.' /work/sway-config"
+    "grep -q 'before-sleep .nekonolock.' /root/sway-config"
 check "swayidle 以外の swaylock は残る" \
-    "grep -q 'bindsym .*exec swaylock' /work/sway-config"
+    "grep -q 'bindsym .*exec swaylock' /root/sway-config"
 check "PAM は ansible が管理" "grep -q 'Managed by ansible' /etc/pam.d/nekonolock"
 
 if ansible-playbook -i localhost, -c local /work/playbook.yml >/tmp/ansible2.log 2>&1; then

@@ -99,6 +99,16 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 `nekonolock_swayidle_command` で調整する。role に任せない場合は
 `nekonolock_manage_swayidle: false` にする。
 
+- `nekonolock_sway_config` が無い場合は **失敗する**（自動ロックの設定漏れを
+  黙って成功にしない）。sway を使わないホストでは
+  `nekonolock_manage_swayidle: false` を明示する。
+- `nekonolock_sway_config` が symlink の場合、実体が対象ユーザーの home 内に
+  あるときだけ編集する。dotfiles の symlink はそのまま使える。home 外を指す
+  symlink は root による home 外への書き込みになるため拒否する。
+- `nekonolock_pam_service` / `nekonolock_pam_include` は
+  ファイル名・PAM サービス名として安全な文字（英数字、`_`、`.`、`-`）だけを
+  受け付ける。`/etc/pam.d` の外へのパスや改行の注入を防ぐ。
+
 ## 実機で必要な設定
 
 - YubiKey: `scdaemon` を pcscd 経由で使う（`disable-ccid`）。`pam_pkcs11` /

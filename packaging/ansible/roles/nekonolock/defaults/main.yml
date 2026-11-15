@@ -3,6 +3,7 @@
 nekonolock_user: "{{ ansible_user_id }}"
 
 nekonolock_package: nekonolock
+# /etc/pam.d 配下のファイル名。'/' や改行は role が拒否する。
 nekonolock_pam_service: nekonolock
 # login は system-login -> system-auth を辿るため、pam_faillock が効く。
 nekonolock_pam_include: login
