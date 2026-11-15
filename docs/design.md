@@ -425,6 +425,11 @@ packaging/     # PKGBUILD と ansible role のステージング
   optdepends に置く。
 - socket unit は `ListenSequentialPacket=` を使う。`ListenStream=` は
   `SOCK_STREAM` を作り、ヘルパの種別検証で起動できない（[ADR-0019](decisions.md)）。
+- 認証ヘルパの user service は capability を持たず
+  （`CapabilityBoundingSet=` / `AmbientCapabilities=` を空）、
+  `RestrictAddressFamilies=AF_UNIX`、`ProtectSystem=strict`、
+  `SystemCallFilter=@system-service` などで絞る。PAM モジュールは sudo の
+  プロセス内で動くため unit ではない。
 - ansible role `nekonolock`（ansible-nekonodesk）: package 導入、
   `/etc/pam.d/nekonolock`、`nekonolock-auth.socket` の enable、
   `swayidle` の lock コマンド差し替え。unit は package の 1 か所だけに置き、
