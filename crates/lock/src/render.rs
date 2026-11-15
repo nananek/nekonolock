@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 
-use fontdue::{Font, FontSettings};
+use fontdue::{Font, FontSettings, Metrics};
 use nekonolock_proto::UiConfig;
 
 use crate::input::Mode;
@@ -769,13 +769,12 @@ fn draw_text(
         Align::Center => x - total / 2.0,
         Align::Right => x - total,
     };
-    let max_height = metrics.iter().map(|m| m.height).max().unwrap_or(0);
-    let top = center_y - max_height as f32 / 2.0;
+    let baseline = text_baseline(font, size, center_y, &metrics).round() as i32;
     let mut pen = start;
     for (c, metric) in text.chars().zip(metrics.iter()) {
         let (_, bitmap) = font.rasterize(c, size);
         let x = pen.round() as i32 + metric.xmin;
-        let y = top.round() as i32 + (max_height.saturating_sub(metric.height) / 2) as i32;
+        let y = glyph_top(metric, baseline);
         blit(
             canvas,
             stride,
@@ -789,6 +788,42 @@ fn draw_text(
         );
         pen += metric.advance_width + tracking;
     }
+}
+
+/// 行のベースライン（画面座標、下向き正）。
+///
+/// 文字ごとのビットマップを縦中央へ寄せると、小文字や降下部が大文字と
+/// 同じ帯に浮いて見える。フォントの ascent / descent から行の中心を求め、
+/// すべてのグリフを同じベースラインに載せる。
+fn text_baseline(font: &Font, size: f32, center_y: f32, metrics: &[Metrics]) -> f32 {
+    if let Some(line) = font.horizontal_line_metrics(size) {
+        return center_y + (line.ascent + line.descent) / 2.0;
+    }
+    ink_baseline(center_y, metrics)
+}
+
+/// 行メトリクスを持たないフォント向けのフォールバック。この行のグリフの
+/// 上端と下端から中心を求める。
+fn ink_baseline(center_y: f32, metrics: &[Metrics]) -> f32 {
+    if metrics.is_empty() {
+        return center_y;
+    }
+    let ascent = metrics
+        .iter()
+        .map(|m| (m.ymin + m.height as i32) as f32)
+        .fold(f32::MIN, f32::max);
+    let descent = metrics
+        .iter()
+        .map(|m| m.ymin as f32)
+        .fold(f32::MAX, f32::min);
+    center_y + (ascent + descent) / 2.0
+}
+
+/// グリフのビットマップ上端の y。`ymin` はベースラインからビットマップ
+/// 下端までの上向きオフセット（降下部は負）なので、上端はさらに
+/// `height` だけ上になる。
+fn glyph_top(metric: &Metrics, baseline: i32) -> i32 {
+    baseline - metric.ymin - metric.height as i32
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1016,5 +1051,56 @@ mod tests {
                     .any(|pixel| pixel[3] == 0xff)
             );
         }
+    }
+
+    #[test]
+    fn glyphs_sit_on_a_shared_baseline() {
+        let baseline = 100;
+        let cap = Metrics {
+            ymin: 0,
+            height: 14,
+            ..Metrics::default()
+        };
+        let x_height = Metrics {
+            ymin: 0,
+            height: 9,
+            ..Metrics::default()
+        };
+        let descender = Metrics {
+            ymin: -3,
+            height: 9,
+            ..Metrics::default()
+        };
+
+        // 小文字を大文字と同じ上端に揃えない。下端（ベースライン）だけを揃える。
+        assert_eq!(glyph_top(&cap, baseline), 86);
+        assert_eq!(glyph_top(&x_height, baseline), 91);
+        assert_eq!(
+            glyph_top(&cap, baseline) + cap.height as i32,
+            glyph_top(&x_height, baseline) + x_height.height as i32
+        );
+        // 降下部はベースラインより下へ出る。
+        assert_eq!(glyph_top(&descender, baseline), 94);
+        assert!(
+            glyph_top(&descender, baseline) + descender.height as i32 > baseline,
+            "descender must go below the baseline"
+        );
+    }
+
+    #[test]
+    fn ink_baseline_centers_glyph_extents() {
+        let cap = Metrics {
+            ymin: 0,
+            height: 14,
+            ..Metrics::default()
+        };
+        let descender = Metrics {
+            ymin: -3,
+            height: 9,
+            ..Metrics::default()
+        };
+        // 上端 14、下端 -3 の帯を center_y のまわりに置く。
+        assert_eq!(ink_baseline(50.0, &[cap, descender]), 55.5);
+        assert_eq!(ink_baseline(50.0, &[]), 50.0);
     }
 }
