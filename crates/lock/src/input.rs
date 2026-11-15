@@ -25,11 +25,19 @@ impl Mode {
         }
     }
 
-    /// モード帯に出す名前。既定フォント（DejaVuSansMono）で描ける ASCII にする。
+    /// モード capsule に出す名前。
     pub fn label(self) -> &'static str {
         match self {
             Self::Pin => "YubiKey PIN",
             Self::Password => "Password",
+        }
+    }
+
+    /// 入力欄の下に出す既定の案内。状態メッセージが無いときだけ使う。
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Pin => "Touch the key, then enter your PIN",
+            Self::Password => "Enter your password",
         }
     }
 }

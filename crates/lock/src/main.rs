@@ -80,7 +80,9 @@ fn run() -> Result<()> {
 
     let default_ui = UiConfig::default();
     let default_clock_format = default_ui.clock_format.clone();
+    let default_date_format = default_ui.date_format.clone();
     let clock_text = clock::format_now(&default_clock_format);
+    let date_text = clock::format_now(&default_date_format);
 
     let mut app = App {
         conn: conn.clone(),
@@ -106,6 +108,12 @@ fn run() -> Result<()> {
         pending: None,
         clock_format: default_clock_format,
         clock_text,
+        date_format: default_date_format,
+        date_text,
+        label: default_ui.label.clone(),
+        blank_after: Duration::from_secs(default_ui.blank_after_sec),
+        blanked: false,
+        last_activity: Instant::now(),
         status_line: String::new(),
         dirty: true,
         locked_once: false,
@@ -213,6 +221,12 @@ struct App {
     pending: Option<Pending>,
     clock_format: String,
     clock_text: String,
+    date_format: String,
+    date_text: String,
+    label: String,
+    blank_after: Duration,
+    blanked: bool,
+    last_activity: Instant,
     status_line: String,
     dirty: bool,
     locked_once: bool,
@@ -226,7 +240,9 @@ struct LockSurface {
     name: String,
     surface: SessionLockSurface,
     pool: Option<SlotPool>,
+    /// configure で来る論理サイズ。バッファはこれに `scale` を掛ける。
     size: (u32, u32),
+    scale: i32,
 }
 
 struct Pending {
@@ -268,6 +284,14 @@ impl App {
                 config.ui.clock_format
             );
         }
+        if clock::validate_format(&config.ui.date_format) {
+            self.date_format = config.ui.date_format.clone();
+        } else {
+            eprintln!(
+                "nekonolock: [ui] date_format を解釈できない（既定値を使う）: {}",
+                config.ui.date_format
+            );
+        }
 
         match Theme::from_config(&config.ui) {
             Ok(theme) => self.theme = theme,
@@ -280,10 +304,19 @@ impl App {
         }
         self.auth_timeout = Duration::from_secs(config.auth.timeout_sec.clamp(1, 600));
         self.status_timeout = STATUS_TIMEOUT.min(self.auth_timeout);
+        self.label = config.ui.label.clone();
+        self.blank_after = Duration::from_secs(config.ui.blank_after_sec.min(86_400));
+        self.last_activity = Instant::now();
         self.clock_text = clock::format_now(&self.clock_format);
+        self.date_text = clock::format_now(&self.date_format);
         self.load_socket();
 
-        match Renderer::load(Path::new(&config.ui.font)) {
+        let clock_font = if config.ui.clock_font.trim().is_empty() {
+            None
+        } else {
+            Some(Path::new(&config.ui.clock_font))
+        };
+        match Renderer::load(Path::new(&config.ui.font), clock_font) {
             Ok(renderer) => self.renderer = renderer,
             Err(err) => {
                 eprintln!("nekonolock: フォントを読めない（文字なしでロックを維持）: {err}")
@@ -412,17 +445,42 @@ impl App {
     }
 
     fn tick(&mut self, now: Instant) -> bool {
+        // 純黒の間は時計も状態も更新しない。入力が来たら on_key が起こす。
+        if self.blanked {
+            return false;
+        }
+
         let clock = clock::format_now(&self.clock_format);
+        let date = clock::format_now(&self.date_format);
         let status = self.ui.status_line(now);
         let mut changed = self.advance_repeat(now);
         if clock != self.clock_text {
             self.clock_text = clock;
             changed = true;
         }
+        if date != self.date_text {
+            self.date_text = date;
+            changed = true;
+        }
         if status != self.status_line {
             self.status_line = status;
             changed = true;
         }
+
+        // 認証待ちの間に黒くしない。応答が来たら通常の描画に戻す。
+        if blank_due(
+            now,
+            self.last_activity,
+            self.blank_after,
+            self.pending.is_some(),
+        ) {
+            self.blanked = true;
+            self.repeat = None;
+            // 途中まで入れた秘密を黒画面の背後に残さない。
+            self.ui.clear_secret();
+            changed = true;
+        }
+
         changed
     }
 
@@ -483,9 +541,22 @@ impl App {
     }
 
     fn draw_surface(&mut self, index: usize) -> Result<()> {
-        let (width, height) = self.surfaces[index].size;
+        let (logical_w, logical_h) = self.surfaces[index].size;
+        if logical_w == 0 || logical_h == 0 {
+            return Ok(());
+        }
+        let scale = self.surfaces[index].scale.max(1) as u32;
+        let width = logical_w * scale;
+        let height = logical_h * scale;
         let stride = width as usize * 4;
         let surface = self.surfaces[index].surface.wl_surface().clone();
+        surface.set_buffer_scale(scale as i32);
+
+        if self.surfaces[index].pool.is_none() {
+            let len = width as usize * height as usize * 4;
+            let pool = SlotPool::new(len, &self.shm).context("wl_shm の pool を作れない")?;
+            self.surfaces[index].pool = Some(pool);
+        }
 
         let pool = self.surfaces[index]
             .pool
@@ -504,7 +575,10 @@ impl App {
             mode: self.ui.mode(),
             secret_len: self.ui.secret_len(),
             clock: &self.clock_text,
+            date: &self.date_text,
             message: &self.status_line,
+            label: &self.label,
+            blank: self.blanked,
         };
         self.renderer
             .render(canvas, stride, width, height, &self.theme, &view);
@@ -529,15 +603,20 @@ impl App {
         if size.0 == 0 || size.1 == 0 {
             return Ok(());
         }
-        if self.surfaces[index].size != size || self.surfaces[index].pool.is_none() {
-            let len = size.0 as usize * size.1 as usize * 4;
-            self.surfaces[index].pool =
-                Some(SlotPool::new(len, &self.shm).context("wl_shm の pool を作れない")?);
+        if self.surfaces[index].size != size {
             self.surfaces[index].size = size;
+            self.surfaces[index].pool = None;
         }
         self.draw_surface(index)?;
         let name = self.surfaces[index].name.clone();
-        println!("lock-surface: {name} {}x{}", size.0, size.1);
+        let scale = self.surfaces[index].scale.max(1) as u32;
+        println!(
+            "lock-surface: {name} {}x{} scale={scale} buffer={}x{}",
+            size.0,
+            size.1,
+            size.0 * scale,
+            size.1 * scale
+        );
         Ok(())
     }
 
@@ -550,16 +629,24 @@ impl App {
             .info(&output)
             .and_then(|info| info.name)
             .unwrap_or_else(|| "unknown".to_string());
+        let scale = self
+            .output_state
+            .info(&output)
+            .map(|info| info.scale_factor)
+            .unwrap_or(1)
+            .max(1);
 
         let surface = self.compositor.create_surface(qh);
+        surface.set_buffer_scale(scale);
         let lock_surface = lock.create_lock_surface(surface, &output, qh);
-        println!("lock-surface: created {name}");
+        println!("lock-surface: created {name} scale={scale}");
         self.surfaces.push(LockSurface {
             output,
             name,
             surface: lock_surface,
             pool: None,
             size: (0, 0),
+            scale,
         });
     }
 
@@ -580,6 +667,18 @@ impl App {
     }
 
     fn on_key(&mut self, event: KeyEvent) {
+        self.last_activity = Instant::now();
+        if self.blanked {
+            // 黒画面からの復帰キーは入力として消費する。見えない入力欄に
+            // 秘密の 1 文字目が入るのを避ける。
+            self.blanked = false;
+            self.repeat = None;
+            self.clock_text = clock::format_now(&self.clock_format);
+            self.date_text = clock::format_now(&self.date_format);
+            self.dirty = true;
+            return;
+        }
+
         // 修飾キー付きの入力はテキストとして扱わない（Ctrl+C が 'c' に化けるのを防ぐ）。
         if self.modifiers.ctrl || self.modifiers.alt || self.modifiers.logo {
             return;
@@ -617,6 +716,11 @@ impl App {
 }
 
 /// 押しっぱなしで繰り返してよいキー。Enter / Tab / Esc は繰り返さない。
+/// 無入力タイマーが満了したか。認証待ちの間は黒くしない。
+fn blank_due(now: Instant, last_activity: Instant, blank_after: Duration, pending: bool) -> bool {
+    !blank_after.is_zero() && !pending && now.duration_since(last_activity) >= blank_after
+}
+
 fn is_repeatable(event: &KeyEvent) -> bool {
     matches!(event.keysym, Keysym::BackSpace)
         || (event.utf8.is_some()
@@ -737,8 +841,26 @@ impl OutputHandler for App {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        let scale = self
+            .output_state
+            .info(&output)
+            .map(|info| info.scale_factor)
+            .unwrap_or(1)
+            .max(1);
+        let mut changed = false;
+        for entry in &mut self.surfaces {
+            if entry.output == output && entry.scale != scale {
+                entry.scale = scale;
+                entry.pool = None;
+                entry.surface.wl_surface().set_buffer_scale(scale);
+                changed = true;
+            }
+        }
+        if changed {
+            self.dirty = true;
+        }
     }
 
     fn output_destroyed(
@@ -959,5 +1081,20 @@ mod tests {
         assert!(is_repeatable(&event(Keysym::BackSpace, None)));
         assert!(is_repeatable(&event(Keysym::a, Some("a"))));
         assert!(is_repeatable(&event(Keysym::_1, Some("1"))));
+    }
+
+    #[test]
+    fn blank_timer_respects_zero_and_pending() {
+        let now = Instant::now();
+        let earlier = now.checked_sub(Duration::from_secs(10)).unwrap();
+        assert!(!blank_due(now, earlier, Duration::ZERO, false));
+        assert!(!blank_due(now, earlier, Duration::from_secs(5), true));
+        assert!(blank_due(now, earlier, Duration::from_secs(5), false));
+        assert!(!blank_due(
+            now,
+            now.checked_sub(Duration::from_secs(1)).unwrap(),
+            Duration::from_secs(5),
+            false
+        ));
     }
 }
