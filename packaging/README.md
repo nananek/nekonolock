@@ -25,11 +25,14 @@ pacman package `nekonolock` と ansible role `nekonolock` のステージング�
 でき、ヘルパが `WrongSocketType` で起動を拒否する（設計 §6）。
 
 `socket` だけを enable する。`service` は socket activation 専用なので
-`[Install]` を持たない。`service` は Linux capability を持たず
-（`CapabilityBoundingSet=` / `AmbientCapabilities=` を空にする）、
-`RestrictAddressFamilies=AF_UNIX` と `ProtectSystem=strict` などの
-sandbox を入れる。`systemd-analyze security --offline=yes` の exposure は
-1.9（`UMask=0077` を含む）。
+`[Install]` を持たない。`service` は `RestrictAddressFamilies=AF_UNIX`、
+`RestrictNamespaces=yes`、`RestrictRealtime=yes`、`LockPersonality=yes`、
+`SystemCallArchitectures=native` で絞る。capability / namespace / filesystem の
+制限（`CapabilityBoundingSet=` / `NoNewPrivileges=` / `ProtectSystem=strict` /
+`PrivateNetwork=` / `PrivateTmp=` / カーネル保護系 / `SystemCallFilter=`）は
+user unit の暗黙の user namespace や setuid 制限で PAM の setuid 経路を
+壊すため入れない。`systemd-analyze security --offline=yes` の exposure は
+7.5（`UMask=0077` を含む）。
 
 ## package のビルド
 
