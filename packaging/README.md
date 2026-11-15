@@ -48,7 +48,7 @@ makepkg --printsrcinfo > .SRCINFO
 （`cargo` を含む）。YubiKey を pcscd 経由で使うホストでは `pcsclite` と
 `ccid` も入れる（`optdepends`）。
 
-`source` は v0.3.0 から GitHub release tag の archive を pin している。
+`source` は v0.3.1 から GitHub release tag の archive を pin している。
 次の tag (v0.4.0 など) を切ったら `pkgver` を上げて `sha256sums` を再計算する。
 v0.3.0 以降の archive には `crates/pam` が含まれるため、`build()` /
 `package()` の条件付き処理で `pam_nekonolock.so` も同梱される。
