@@ -8,9 +8,9 @@ use nekonolock_proto::{
 };
 use zeroize::Zeroize;
 
-use crate::card::CardSigner;
 use crate::engine::Engine;
 use crate::pam::PasswordAuthenticator;
+use nekonolock_gpg::CardSigner;
 
 /// `once` が true なら 1 接続を処理して終了する（テストと手動確認用）。
 pub fn serve<C: CardSigner, P: PasswordAuthenticator>(

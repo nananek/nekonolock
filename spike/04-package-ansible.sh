@@ -117,6 +117,7 @@ check "socket は SOCK_SEQPACKET" \
     "grep -qx 'ListenSequentialPacket=%t/nekonolock/auth.sock' /usr/lib/systemd/user/nekonolock-auth.socket"
 check "service は socket を要求" \
     "grep -qx 'Requires=nekonolock-auth.socket' /usr/lib/systemd/user/nekonolock-auth.service"
+check "sudo 用設定の例がある" "[ -f /usr/share/doc/nekonolock/sudo.toml.example ]"
 check "LICENSE がある" "[ -f /usr/share/licenses/nekonolock/LICENSE ]"
 check "LICENSE は repo と同一" "cmp -s /usr/share/licenses/nekonolock/LICENSE /work/LICENSE"
 check "nekonolock --help" "/usr/bin/nekonolock --help >/dev/null 2>&1"

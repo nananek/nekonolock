@@ -7,7 +7,6 @@
 //! 秘密（PIN / パスワード）はログ・argv・環境変数に出さない。
 
 #[cfg_attr(feature = "mock-card", allow(dead_code))]
-mod card;
 mod engine;
 #[cfg(any(feature = "mock-card", feature = "mock-pam"))]
 mod mock;
@@ -24,11 +23,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use nekonolock_proto::{Config, Listener, default_socket_path};
 
-#[cfg(not(feature = "mock-card"))]
-use crate::card::GpgCard;
 use crate::engine::Engine;
 #[cfg(not(feature = "mock-pam"))]
 use crate::pam::PamAuth;
+#[cfg(not(feature = "mock-card"))]
+use nekonolock_gpg::GpgCard;
 
 // モックを有効にしたまま配布ビルドを作れてしまうと、既知の PIN で解除できる
 // バイナリができてしまう。テスト用 feature は debug ビルドに限定する。

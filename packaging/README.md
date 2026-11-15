@@ -17,13 +17,22 @@ pacman package `nekonolock` と ansible role `nekonolock` のステージング�
 | `/etc/pam.d/nekonolock` | パスワード認証。`auth` と `account` の両方で `login` を include する |
 | `/usr/lib/systemd/user/nekonolock-auth.socket` | `SOCK_SEQPACKET` の socket activation |
 | `/usr/lib/systemd/user/nekonolock-auth.service` | 認証ヘルパ本体 |
+| `/usr/lib/security/pam_nekonolock.so` | sudo 用 PAM モジュール（Phase 7、ソースに `crates/pam` がある場合） |
+| `/usr/share/doc/nekonolock/sudo.toml.example` | `/etc/nekonolock/sudo.toml` の例 |
 | `/usr/share/licenses/nekonolock/LICENSE` | MIT |
 
 `ListenSequentialPacket=` を使う。`ListenStream=` にすると `SOCK_STREAM` が
 でき、ヘルパが `WrongSocketType` で起動を拒否する（設計 §6）。
 
 `socket` だけを enable する。`service` は socket activation 専用なので
-`[Install]` を持たない。
+`[Install]` を持たない。`service` は `RestrictAddressFamilies=AF_UNIX`、
+`RestrictNamespaces=yes`、`RestrictRealtime=yes`、`LockPersonality=yes`、
+`SystemCallArchitectures=native` で絞る。capability / namespace / filesystem の
+制限（`CapabilityBoundingSet=` / `NoNewPrivileges=` / `ProtectSystem=strict` /
+`PrivateNetwork=` / `PrivateTmp=` / カーネル保護系 / `SystemCallFilter=`）は
+user unit の暗黙の user namespace や setuid 制限で PAM の setuid 経路を
+壊すため入れない。`systemd-analyze security --offline=yes` の exposure は
+7.5（`UMask=0077` を含む）。
 
 ## package のビルド
 
@@ -40,6 +49,10 @@ makepkg --printsrcinfo > .SRCINFO
 `ccid` も入れる（`optdepends`）。
 
 `source` は v0.2.1 から GitHub release tag の archive を pin している。
+v0.2.1 の archive には `crates/pam` が無いため、その package には
+`pam_nekonolock.so` は入らない。`build()` / `package()` はソースに
+`crates/pam` があるときだけモジュールをビルド・配置するので、Phase 7 を
+含む tag に `pkgver` / `sha256sums` を切り替えれば自動で同梱される。
 `[nekono]` repo の `pkgs/nekonolock/` も同じ tag archive と sha256 を使う。
 新しい tag を切ったら、`pkgver` を上げて次のように `sha256sums` を再計算する。
 
@@ -125,3 +138,31 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 - `[auth] key` は実際の鍵の long key ID か fingerprint にする。
 - パスワードを無効にするホストは `[auth] password = false` にする。
 - `[pam] service` を変えた場合は、role の `nekonolock_pam_service` も合わせる。
+
+## sudo 用 PAM モジュール（Phase 7）
+
+`pam_nekonolock.so` は `/etc/pam.d/sudo` の `auth include system-auth` の
+直前に `auth sufficient pam_nekonolock.so` として入れる。カードが無い、
+PIN が違う、公開鍵が読めないなどの場合は `PAM_IGNORE` を返し、通常の
+パスワード認証へフォールバックする。
+
+設定は `/etc/nekonolock/sudo.toml`（root:root 0644）と、検証用の
+`/etc/nekonolock/sudo-key.asc`（ASCII armored、root 所有）。どちらも
+ユーザーの `~/.config/nekonolock/config.toml` とは独立している。
+モジュールはユーザーの `nekonolock-auth` socket を信頼しない。署名だけを
+実 uid の gpg-agent / scdaemon にさせ、検証は root 側の一時 keyring で行う。
+
+ansible role で有効にする場合:
+
+```yaml
+nekonolock_sudo_auth: true
+nekonolock_sudo_key: "030130E2F156CD74"
+nekonolock_sudo_public_key: "{{ lookup('file', 'files/nekonolock-sudo-key.asc') }}"
+# 必要ならユーザーを限定する。空なら全ユーザー。
+nekonolock_sudo_users: ["nananek"]
+```
+
+role は `/etc/nekonolock/sudo.toml` と公開鍵を置き、`/etc/pam.d/sudo` に
+1 行だけ挿す。`nekonolock_sudo_auth: false` に戻すと、その 1 行を消す。
+公開鍵は `gpg --export --armor <key>` で用意する。`sudo` の PAM 設定を
+直接変えるため、role を適用する前に `/etc/pam.d/sudo` を確認する。

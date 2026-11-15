@@ -8,8 +8,8 @@ use nekonolock_proto::{
     AuthConfig, AuthKind, AuthMethod, Reason, Request, RequestBody, Response, Secret,
 };
 
-use crate::card::{CardError, CardSigner};
 use crate::pam::{PamError, PasswordAuthenticator};
+use nekonolock_gpg::{CardError, CardSigner};
 
 pub struct Engine<C, P> {
     config: AuthConfig,

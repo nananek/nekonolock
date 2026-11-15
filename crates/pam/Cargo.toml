@@ -1,0 +1,23 @@
+[package]
+name = "pam-nekonolock"
+description = "sudo 用の PAM モジュール（YubiKey OpenPGP）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "pam_nekonolock"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+getrandom = "0.4"
+libc = "0.2"
+libloading = "0.9"
+nekonolock-gpg = { path = "../gpg" }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+thiserror = "2"
+toml = "1.2"
+zeroize = "1"

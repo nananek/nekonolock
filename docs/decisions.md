@@ -93,6 +93,9 @@
 - 理由: sudo と lock で同じ PAM 経路を共有すると、切り分けが再び難しくなる。
   まずロック画面を安定させる。
 - 将来: ヘルパを PAM モジュールから呼ぶ形で追加できる（Phase 7）。
+- 補足 (2026-11-15): Phase 7 で `pam_nekonolock.so` を追加した。ただし
+  ユーザーの `nekonolock-auth` socket は呼ばず、署名・検証コードだけを共有する
+  （ADR-0027）。
 
 ## ADR-0011: モード表示は画面全体で明示する
 
@@ -308,3 +311,43 @@
 - 補足: 大文字化は表示だけに適用し、設定ファイルの値やログは書き換えない。
   CJK には大文字・小文字の区別がないため、フォントを差し替えた場合も
   そのまま表示される。
+
+## ADR-0027: sudo 用 PAM モジュールはユーザーのヘルパ socket を信頼しない
+
+- 決定: sudo の YubiKey 認証は `pam_nekonolock.so` が行う。署名は実 uid の
+  ユーザーとして `gpg` を実行して gpg-agent / scdaemon にさせ、検証は root
+  側の一時 keyring に取り込んだ `/etc/nekonolock/sudo-key.asc` だけで行う。
+  設定は root 所有の `/etc/nekonolock/sudo.toml` を読み、ユーザーの
+  `~/.config/nekonolock/config.toml` と `nekonolock-auth` socket は使わない。
+- 理由: `nekonolock-auth` はユーザーが起動・停止・差し替えできる。その応答を
+  root の認証に使うと、同じ uid の攻撃者が偽のヘルパを立てて sudo を
+  通せてしまう。root への権限境界では、ユーザーが制御できるプロセスの
+  応答を信じてはならない。共有するのは `crates/gpg` の署名・検証コードだけに
+  する。
+- 署名と検証を分ける理由: カードを扱えるのはユーザーの gpg-agent / scdaemon
+  だから署名はユーザー側で行う。一方、検証と「どの鍵を信頼するか」は root 側に
+  置かないと、ユーザーが自分の鍵で署名して sudo を通せてしまう。
+- 失敗時は `PAM_IGNORE` を返し、PAM スタックのパスワード認証へフォールバック
+  する。`auth sufficient pam_nekonolock.so` を `auth include system-auth` の
+  直前に置く。誤 PIN はカードのリトライ回数だけを消費し、`pam_faillock` には
+  数えない（カード側で 3 回ブロックされるため二重に締め出さない）。
+- 却下: PAM モジュールからユーザーの `nekonolock-auth` socket に接続する —
+  偽のヘルパで sudo が通る。
+- 却下: `nekonolock-auth` を system service にして root で動かす — 署名の
+  ために結局ユーザーへ `setuid` する必要があり、root 側の検証も別に要る。
+  プロセスと socket が増えるだけで、信頼の置き場所は変わらない。
+- 却下: ユーザーの `~/.config/nekonolock/config.toml` の `[auth] key` を
+  sudo でも使う — ユーザーが鍵を差し替えられる。
+- 却下: sudo の YubiKey を既定で必須にする — カードを忘れたときの締め出しを
+  避ける。ansible の `nekonolock_sudo_auth` でホストごとに有効化する。
+- 補足: PAM モジュールは libpam にリンクせず、実行時に `libpam.so.0` から
+  `pam_get_item` を取る（ADR-0013 と同じ方針）。ビルドに PAM の開発用
+  パッケージを要求しない。
+- 補足: 署名用の一時ディレクトリは root が `/run/user/<uid>` に作り、
+  所有者をユーザーへ移す。root が作った 0700 の `/tmp` 配下では、
+  `setuid` した gpg がチャレンジを読めないため。
+- 補足: 検証用の gpg 子プロセスは、fork 後に実 uid も 0 へ切り替える。
+  sudo の PAM は実 uid = 呼び出したユーザー、実効 uid = root で動くが、
+  gpg は実 uid でファイルを開くため、root 所有の一時 keyring をそのままでは
+  読めない（`Permission denied` になる）。検証は root 所有の入力だけを扱う
+  子に限定する。

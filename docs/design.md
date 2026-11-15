@@ -8,6 +8,7 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
 1. YubiKey で解除できる（PIN 入力）。
 2. YubiKey が無いときはパスワードで解除できる。パスワードは設定で無効化できる。
 3. カードアクセスの競合で挙動が不安定にならない。
+4. sudo でも同じ YubiKey を使える（任意、Phase 7）。
 
 ## 2. 背景
 
@@ -30,6 +31,7 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
 - Sway 用のロック画面（`ext-session-lock-v1`）と、独立した認証ヘルパ。
 - OpenPGP applet によるチャレンジ署名認証。
 - PAM によるパスワード認証（設定で無効化可能）。
+- sudo 用の PAM モジュール（任意、Phase 7）。
 - pacman package と ansible role による配布。
 
 **やらないこと**
@@ -38,7 +40,8 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
 - IME 入力、通知連携、スクリーンセーバー的な演出。
 - マルチユーザ対応（単一 UID 前提）。
 - PIV 証明書による認証（PAM PIV は廃止する）。
-- sudo の YubiKey 認証（当面はパスワードに戻す。必要になれば別 phase）。
+- sudo 用 PAM モジュールの既定有効化（Phase 7 で実装するが、ホストごとに
+  ansible で明示的に有効化する）。
 
 ## 4. アーキテクチャ
 
@@ -53,13 +56,20 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
                                                              |
                                         gpg-agent / scdaemon / pcscd
                                         （カードを持つのはここだけ）
+
++---------------------+        fork + setuid         +----------------------+
+| sudo (PAM)          | ----------------------------> | gpg（実 uid）        |
+| pam_nekonolock.so   |                               | ユーザーの gpg-agent  |
+| - root 所有の設定    |                               | scdaemon / カード     |
+| - root 側で署名検証  | <---------------------------- +----------------------+
++---------------------+        署名（チャレンジ）
 ```
 
 UI は認証ロジックを持たない。UI と認証を分ける理由は次のとおり。
 
 - 認証だけを CLI から叩いてテストできる。
 - UI のクラッシュや再起動が認証状態に影響しない。
-- 将来 sudo 用の PAM モジュールから同じヘルパを再利用できる。
+- sudo 用の PAM モジュールと署名・検証の実装（`crates/gpg`）を共有できる。
 
 ## 5. 認証方式
 
@@ -142,6 +152,36 @@ package は `ttf-dejavu` を依存に入れる。
   （正規の解除手段を塞がないため。[ADR-0017](decisions.md)）。
 - 秘密（PIN / パスワード）はログに出さない。受信バッファは使用後に zeroize する。
   UI の入力欄も送信結果を受け取った時点で zeroize する。
+
+### 5.5 sudo（Phase 7、任意）
+
+sudo の YubiKey 認証は `pam_nekonolock.so` で行う。ロック画面の
+`nekonolock-auth` socket には接続しない。UI 用ヘルパはユーザーが起動・
+差し替えできるため、それを root への認証に使うと、同じ uid の攻撃者が
+偽のヘルパで sudo を通せてしまう。共有するのは `crates/gpg` の
+署名・検証コードだけにする。
+
+1. sudo は実 uid（呼び出したユーザー）で PAM モジュールを呼ぶ。
+2. モジュールは root 所有の `/etc/nekonolock/sudo.toml` と
+   `/etc/nekonolock/sudo-key.asc` を読む。ユーザーの
+   `~/.config/nekonolock/config.toml` は読まない。
+3. `/run/user/<uid>` と home の所有者・モードを確認し、子プロセスの
+   `gpg` を実 uid / gid に落として署名させる。PIN は PAM の会話
+   （エコーなし）で受け取り、gpg の stdin に渡す。
+4. 署名の検証は root 側で行う。一時 keyring に信頼した公開鍵だけを
+   取り込み、`VALIDSIG` の fingerprint と失効・期限切れを確認する。
+   PAM は実 uid = ユーザー、実効 uid = root で動くため、gpg が実 uid で
+   ファイルを開くことに注意し、検証用の子プロセスは fork 後に実 uid も
+   root へ切り替える。
+5. 成功なら `PAM_SUCCESS`。カードが無い・PIN が違う・設定や鍵が読めない
+   場合は `PAM_IGNORE` を返す。PAM スタックは `auth sufficient
+   pam_nekonolock.so` を `auth include system-auth` の直前に置くので、
+   パスワード認証へフォールバックする。
+
+PIN の誤りはカード側のリトライ回数（3 回）だけを消費し、sudo の
+`pam_faillock` には数えない。YubiKey を必須にしたいホストは、PAM の
+`sufficient` を `required` に変えるのではなく、まずこの既定動作
+（パスワードへのフォールバック）を理解してから別途検討する。
 
 ## 6. プロトコル
 
@@ -237,6 +277,30 @@ password_accent = "#A34A3A"
   UI は `[ui]` を独立に解釈し、`[auth]` / `[pam]` の型・未知項目の誤りは
   既定値に落としてロックを維持する。トップレベルの未知の項目は両方が拒否する。
 
+### 7.1 sudo 用の設定（Phase 7）
+
+sudo 用の PAM モジュールは、ユーザーの設定ではなく root 所有の
+`/etc/nekonolock/sudo.toml` を読む。検証用の公開鍵は
+`/etc/nekonolock/sudo-key.asc`（ASCII armored）に置く。
+
+```toml
+[sudo]
+enabled = true
+key = "030130E2F156CD74"
+public_key = "/etc/nekonolock/sudo-key.asc"
+challenge_bytes = 32
+timeout_sec = 30
+users = []          # 空なら全ユーザー
+```
+
+- `nekonolock-auth` の `[auth] key` と同じ key ID / fingerprint を指定できる。
+- 両ファイルは root 所有で、group / other から書き換えられないこと。
+  `sudo.toml` は 0644、`sudo-key.asc` は 0644 を想定する。
+- `enabled = false` ならモジュールは何もしない（既定）。
+- `users` に名前を並べたときだけ、そのユーザーに限定する。
+- 設定は ansible role の `nekonolock_sudo_auth` / `nekonolock_sudo_key` /
+  `nekonolock_sudo_public_key` で配る。
+
 ## 8. Wayland 実装方針
 
 - `ext_session_lock_manager_v1`（Sway 1.12 で確認済み）を使う。
@@ -305,12 +369,23 @@ password_accent = "#A34A3A"
   知らずに署名できるため、検証側で止める（[ADR-0016](decisions.md)）。
 - 認証成功後は、UI が lock surface を破棄して終了する。
 - ヘルパは認証結果以外を返さない（カードの詳細情報や PIN 残回数を返さない）。
+- sudo 用 PAM モジュールはユーザーの `nekonolock-auth` socket を信頼しない。
+  ユーザーが差し替えられるプロセスの応答を root の認証に使うと、同じ uid の
+  攻撃者が偽のヘルパで sudo を通せてしまう。
+- sudo 用の署名は実 uid の gpg-agent にさせるが、検証は root 側の一時
+  keyring に取り込んだ root 所有の公開鍵だけで行う。`gpg` は絶対パス
+  （`/usr/bin/gpg`）で起動し、環境変数は必要なものだけを設定する。
+- sudo 用の設定と公開鍵は root 所有で、group / other から書き換えられない
+  ことをモジュールが確認する。symlink は辿らず、開いた fd のメタデータを見る。
 
 ## 11. テスト方針
 
 - 単体: プロトコルの serde 往復、設定の既定値と不正値、チャレンジ検証ロジック
   （署名器はモック）、入力状態（モード切替・文字種・長さ上限・クールダウン）、
   描画のレイアウト（フレーム太さ・帯の高さ・色の解釈）、時計の書式。
+- sudo: `crates/pam` の設定検証（root 所有・モード・key/users/上限）、
+  PIN の受理・拒否、カード無し・カードエラーのマッピングを単体テストする。
+  PAM の会話関数と `pam_sm_authenticate` の export は実機の sudo で確認する。
 - 統合: ヘルパを feature flag でモック PAM / モックカードにして、要求の受理・拒否、
   `kind` の不整合、タイムアウトを検証する。
   `crates/auth/tests/helper.rs` は実際にバイナリを起動して socket 越しに確認する。
@@ -334,23 +409,37 @@ password_accent = "#A34A3A"
 
 ```
 crates/proto   # 要求/応答の型と socket ヘルパ
+crates/gpg     # OpenPGP の署名・検証（認証ヘルパと PAM モジュールで共有）
 crates/auth    # nekonolock-auth
 crates/lock    # nekonolock (UI)
+crates/pam     # pam_nekonolock.so（sudo、Phase 7）
 packaging/     # PKGBUILD と ansible role のステージング
 ```
 
 - pacman package `nekonolock`（[nekono] repo）。バイナリ 2 本、
   `/etc/pam.d/nekonolock`、systemd-user unit 2 つ（socket activation、
-  `/usr/lib/systemd/user/`）、LICENSE を同梱する。
+  `/usr/lib/systemd/user/`）、`/usr/lib/security/pam_nekonolock.so`（Phase 7
+  を含むソースからビルドした場合）、sudo 用設定の例、LICENSE を同梱する。
   依存は `gnupg` / `libxkbcommon` / `pam` / `ttf-dejavu`（既定フォント）。
   YubiKey を pcscd 経由で使うホスト向けに `pcsclite` / `ccid` を
   optdepends に置く。
 - socket unit は `ListenSequentialPacket=` を使う。`ListenStream=` は
   `SOCK_STREAM` を作り、ヘルパの種別検証で起動できない（[ADR-0019](decisions.md)）。
+- 認証ヘルパの user service は `RestrictAddressFamilies=AF_UNIX`、
+  `RestrictNamespaces=yes`、`RestrictRealtime=yes`、`LockPersonality=yes`、
+  `SystemCallArchitectures=native` で絞る。capability / namespace /
+  filesystem の制限（`CapabilityBoundingSet=` / `NoNewPrivileges=` /
+  `ProtectSystem=strict` / `PrivateNetwork=` / `PrivateTmp=` / カーネル保護系 /
+  `SystemCallFilter=`）は user unit の暗黙の user namespace や setuid 制限で
+  PAM の setuid 経路を壊すため入れない。PAM モジュールは sudo のプロセス内で
+  動くため unit ではない。
 - ansible role `nekonolock`（ansible-nekonodesk）: package 導入、
   `/etc/pam.d/nekonolock`、`nekonolock-auth.socket` の enable、
   `swayidle` の lock コマンド差し替え。unit は package の 1 か所だけに置き、
-  role は enable する（[ADR-0019](decisions.md)）。
+  role は enable する（[ADR-0019](decisions.md)）。`nekonolock_sudo_auth:
+  true` のときだけ、sudo 用の設定・公開鍵を置き `/etc/pam.d/sudo` の
+  `auth include system-auth` の前に `auth sufficient pam_nekonolock.so` を
+  挿す（[ADR-0027](decisions.md)）。
 - ユーザー設定（TOML）は dotfiles 管理。
 - `packaging/` は移植用のステージング。pacman repo と ansible repo への
   移植手順は `packaging/README.md` に書く。
@@ -403,7 +492,13 @@ packaging/     # PKGBUILD と ansible role のステージング
   無操作時の純黒
   （2026-11-15。`docs/images/` の画像は
   `cargo run -p nekonolock --example preview` で再生成する。）
-- [ ] Phase 7（任意）: sudo 用 PAM モジュール（同じヘルパを再利用）
+- [x] Phase 7（任意）: sudo 用 PAM モジュール
+  （2026-11-15 実装。`crates/pam` の `pam_nekonolock.so`。ユーザーの
+  `nekonolock-auth` socket は信頼せず、`crates/gpg` を共有して署名だけを
+  実 uid の gpg-agent にさせ、検証は root 側の一時 keyring で行う。
+  設定は root 所有の `/etc/nekonolock/sudo.toml` と `sudo-key.asc`。
+  `PAM_IGNORE` でパスワード認証へフォールバックする。ansible role は
+  `nekonolock_sudo_auth` で明示的に有効化する（[ADR-0027](decisions.md)）。）
 
 ## 14. 未確定事項
 
