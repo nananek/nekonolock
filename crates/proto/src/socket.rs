@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nix::sys::socket::{
-    Backlog, MsgFlags, SockFlag, SockType, UnixAddr, accept4, bind, connect, getsockopt, listen,
-    recv, send, setsockopt, socket, sockopt,
+    Backlog, MsgFlags, SockFlag, SockType, UnixAddr, accept4, bind, connect as nix_connect,
+    getsockopt, listen, recv, send, setsockopt, socket, sockopt,
 };
 use nix::sys::time::TimeVal;
 use nix::unistd::geteuid;
@@ -46,6 +46,8 @@ pub enum SocketError {
     NoRuntimeDir,
     #[error("socket の親ディレクトリが安全でない: {0}")]
     UnsafeDirectory(PathBuf),
+    #[error("socket のパスが安全でない（所有者違い、または socket ではない）: {0}")]
+    UnsafePath(PathBuf),
     #[error("既に socket 以外のファイルがある: {0}")]
     PathInUse(PathBuf),
     #[error("別のプロセスが socket を使用中: {0}")]
@@ -82,7 +84,7 @@ impl Listener {
                     return Err(SocketError::PathInUse(path.to_path_buf()));
                 }
                 if meta.uid() != geteuid().as_raw() {
-                    return Err(SocketError::PathInUse(path.to_path_buf()));
+                    return Err(SocketError::UnsafePath(path.to_path_buf()));
                 }
                 // 生きている socket なら二重起動。接続できなければ古い socket とみなす。
                 let probe = socket(
@@ -92,7 +94,7 @@ impl Listener {
                     None,
                 )?;
                 let addr = UnixAddr::new(path)?;
-                match connect(probe.as_raw_fd(), &addr) {
+                match nix_connect(probe.as_raw_fd(), &addr) {
                     Ok(()) => return Err(SocketError::AlreadyRunning(path.to_path_buf())),
                     Err(nix::Error::ECONNREFUSED | nix::Error::ENOENT) => {
                         // ディレクトリは 0700 で所有者は自分なので、古い socket は消してよい。
@@ -171,6 +173,38 @@ impl Drop for Listener {
 /// accept 済みの 1 接続。
 pub struct Connection {
     fd: OwnedFd,
+}
+
+/// 同じ uid が listen している socket へ接続する。
+///
+/// パスは socket で、所有者が実効 uid と一致することを確認する。
+/// 接続後は `SO_PEERCRED` でも相手の uid を確認する。
+pub fn connect(path: &Path) -> Result<Connection, SocketError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() && meta.uid() == geteuid().as_raw() => {}
+        Ok(_) => return Err(SocketError::UnsafePath(path.to_path_buf())),
+        Err(err) => return Err(err.into()),
+    }
+
+    let fd = socket(
+        nix::sys::socket::AddressFamily::Unix,
+        SockType::SeqPacket,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )?;
+    let addr = UnixAddr::new(path)?;
+    nix_connect(fd.as_raw_fd(), &addr)?;
+
+    let credential = getsockopt(&fd, sockopt::PeerCredentials)?;
+    let expected = geteuid().as_raw();
+    if credential.uid() != expected {
+        return Err(SocketError::WrongPeer {
+            expected,
+            actual: credential.uid(),
+        });
+    }
+
+    Ok(Connection { fd })
 }
 
 impl Connection {
@@ -377,6 +411,36 @@ mod tests {
         let len = recv(client.as_raw_fd(), &mut buf, MsgFlags::empty()).unwrap();
         assert_eq!(&buf[..len], b"world");
 
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn client_connect_checks_owner_and_exchanges_message() {
+        let dir = unique_dir();
+        let path = dir.join("auth.sock");
+        let listener = Listener::bind(&path).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let conn = listener.accept_allowed().unwrap();
+            let request = conn.read_message(Duration::from_secs(1)).unwrap();
+            assert_eq!(request, b"ping");
+            conn.write_message(b"pong").unwrap();
+        });
+
+        let conn = connect(&path).unwrap();
+        conn.write_message(b"ping").unwrap();
+        assert_eq!(conn.read_message(Duration::from_secs(1)).unwrap(), b"pong");
+        server.join().unwrap();
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn client_connect_rejects_non_socket_path() {
+        let dir = unique_dir();
+        let path = dir.join("config.toml");
+        fs::write(&path, b"x").unwrap();
+        assert!(matches!(connect(&path), Err(SocketError::UnsafePath(_))));
         fs::remove_dir_all(dir).ok();
     }
 }

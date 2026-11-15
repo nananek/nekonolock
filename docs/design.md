@@ -105,24 +105,42 @@ PAM の `/etc/pam.d/nekonolock`（`auth include login`）を通す。
 パスワードが PIN として送られ、カードのリトライ回数を消費するため、
 控えめなインジケータでは不十分。
 
-- 画面の外周に 12 px の枠を引き、モード色で塗る。
+- 画面の外周にモード色の枠を引く。太さは `pin` が `frame_width`、
+  `password` が `frame_width + 4`（既定 12 px / 16 px）。
 - 画面上部に高さ 20% 程度の帯を敷き、モード名を大きく出す。
-  - `pin`: 藍 + 黄。ラベルは `YubiKey PIN` と「YubiKey の PIN」。
-  - `password`: 臙脂 + 白。ラベルは `Password` と「パスワード」。
-- 入力ドットもモード色に合わせる。
+  - `pin`: 藍 + 黄。ラベルは `YubiKey PIN`。
+  - `password`: 臙脂 + 白。ラベルは `Password`。
+- 入力ドットはモードの `on_accent` 色（既定は黄 / 白）にする。背景の黒に
+  対してコントラストを確保するため、暗い `accent` は使わない。
 - 色だけに頼らない（文字と枠の太さでも区別できる）。
-- 切替は即時反映し、入力中の文字列は破棄する（モード混在を防ぐ）。
+- 切替は即時反映し、入力中の文字列は破棄する（モード混乱を防ぐ）。
 - 点滅・明滅はしない（眩しさと混乱を避ける）。
+
+既定フォント（DejaVuSansMono）は ASCII のみなので、帯とメッセージは英語で出す。
+日本語を出す場合は `[ui] font` を CJK 対応フォントへ差し替える。
+フォントを読めない場合は、ロックを先に取得したうえでテキストなしのフレームと
+モード帯でロックを維持する（[ADR-0018](decisions.md)）。Phase 4 の package で
+`ttf-dejavu` を依存に入れる。
 
 ### 5.4 失敗時の扱い
 
 - 認証失敗はロックを維持する（fail closed）。失敗回数と最終メッセージを UI に出す。
-- ヘルパに接続できない場合は「認証ヘルパに接続できない」を表示し、ロックは維持。
+- ヘルパに接続できない場合は `AUTH HELPER UNAVAILABLE` を表示し、ロックは維持。
   ヘルパは socket activation で再起動させる。
 - ヘルパは要求の読み取りに `timeout_sec` を使う。時間内に要求が来なければ
   応答せず接続を閉じる（UI は接続失敗として扱う）。
-- カードが抜けた場合はその旨を表示し、`password` が有効ならパスワードへ誘導する。
+- カードが抜けた場合は `YUBIKEY NOT FOUND` を表示し、`password` が有効なら
+  パスワードモードへ切り替える。
+- ロック開始時に `status` を 1 回問い合わせ、カードの有無と有効な方式を反映する。
+  応答が来るまではパスワードを既定にする（カードのリトライを消費しないため）。
+  カードがあり `pin` が有効なら、その応答で PIN モードへ切り替える。
+- 状態メッセージは既定フォントで描ける英語にする（`AUTH FAILED (1/5)`、
+  `WAIT 5s`、`YUBIKEY ERROR`、`PAM ERROR` など）。
+- `[ui] max_attempts` は連打抑止。認証失敗の直後に 1 秒、連続失敗が上限に
+  達したら 5 秒のクールダウンを入れる。`0` で無効。恒久的な拒否はしない
+  （正規の解除手段を塞がないため。[ADR-0017](decisions.md)）。
 - 秘密（PIN / パスワード）はログに出さない。受信バッファは使用後に zeroize する。
+  UI の入力欄も送信結果を受け取った時点で zeroize する。
 
 ## 6. プロトコル
 
@@ -183,32 +201,46 @@ service = "nekonolock"
 - `password = false` で YubiKey 必須運用にできる。
 - `openpgp = false` でパスワードのみにもできる。
 - 両方 `false` は起動時に拒否する。
+- `clock_format` は空でなく `chrono` が解釈できることを起動時に確認する。
+  `max_attempts` は連打抑止のクールダウン（§5.4）。
 - `key` は 16 桁の long key ID か 40 桁の fingerprint（16 進）だけを許可する。
   可能なら 40 桁の fingerprint を使う。照合は key ID なら fingerprint の
   末尾一致、fingerprint なら完全一致にする。
 - 認証ヘルパは `[auth]` と `[pam]` だけを検証する。`[ui]` の色やフォントの
   誤りでロック解除できなくなる（fail closed のまま締め出される）のを避けるため。
-  UI 側は Phase 3 で `[ui]` を検証する。
+  UI は `[ui]` を独立に解釈し、`[auth]` / `[pam]` の型・未知項目の誤りは
+  既定値に落としてロックを維持する。トップレベルの未知の項目は両方が拒否する。
 
 ## 8. Wayland 実装方針
 
 - `ext_session_lock_manager_v1`（Sway 1.12 で確認済み）を使う。
   コンポジタが他クライアントの描画を止めるため、layer-shell の重ね合わせで
   代用するより確実。
+- Wayland に接続したら、設定・フォント・socket パスを読む前に `lock()` を呼ぶ。
+  その後 2 秒だけフォールバック描画でサーフェスを出し、設定とフォントを読む。
+  読み込みに失敗しても既定値とテキストなし描画でロックを維持する
+  （[ADR-0018](decisions.md)）。
 - 全出力に `ext_session_lock_surface_v1` を張る。`wl_output` の追加・削除に追従する。
 - 入力は `wl_keyboard`。IME は使わない。修飾キーは compositor のキーマップに従う。
+  `smithay-client-toolkit` の `xkbcommon` feature を使い、キーリピートは UI の
+  tick で進める（Enter / Tab / Esc は繰り返さない）。
 - 描画は `wl_shm` のバッファに CPU で書く。時計・入力ドット・メッセージだけなので
-  GPU は使わない。
-- 画面構成は 3 層。外周のモード色フレーム（12 px）、上部のモード帯（高さ 20%、
-  モード名を大きく表示）、中央の時計と入力ドット。
+  GPU は使わない。バッファは `slot::SlotPool` に任せ、compositor の release 後に
+  再利用する。
+- 画面構成は 3 層。外周のモード色フレーム（`pin` 12 px / `password` 16 px、
+  設定可）、上部のモード帯（高さ 20%、モード名を大きく表示）、中央の時計と
+  入力ドット。
 - モード色は `[ui] pin_accent` / `password_accent` で設定可能にする。
   既定は pin = 藍 + 黄、password = 臙脂 + 白。
 - フォントは `fontdue` でラスタライズする。シェーピングは不要（ASCII + 数字）。
   CJK を出す予定はないが、時計の曜日を日本語にする場合は設定でフォントを差し替える。
-- 依存は `smithay-client-toolkit`、`wayland-client`、`wayland-protocols`、
-  `memmap2`、`fontdue`、`serde` / `serde_json`、`toml`、`nix`、`zeroize`。
+- 依存は `smithay-client-toolkit`（`calloop` + `xkbcommon`）、`wayland-client`、
+  `wayland-protocols`、`memmap2`、`fontdue`、`chrono`、`serde` / `serde_json`、
+  `toml`、`nix`、`zeroize`。
   認証ヘルパは PAM を `libloading` で `dlopen` し、乱数は `getrandom`、
   gpg 用の一時ファイルは `tempfile` を使う（[ADR-0013](decisions.md)）。
+- `xkbcommon` は実行時にも必要（Arch: `libxkbcommon`、Debian/Ubuntu:
+  `libxkbcommon-dev` はビルド時、実行時は `libxkbcommon0`）。
 
 ## 9. カード排他の解消
 
@@ -240,11 +272,15 @@ service = "nekonolock"
 ## 11. テスト方針
 
 - 単体: プロトコルの serde 往復、設定の既定値と不正値、チャレンジ検証ロジック
-  （署名器はモック）。
+  （署名器はモック）、入力状態（モード切替・文字種・長さ上限・クールダウン）、
+  描画のレイアウト（フレーム太さ・帯の高さ・色の解釈）、時計の書式。
 - 統合: ヘルパを feature flag でモック PAM / モックカードにして、要求の受理・拒否、
   `kind` の不整合、タイムアウトを検証する。
   `crates/auth/tests/helper.rs` は実際にバイナリを起動して socket 越しに確認する。
-- E2E: ayaka 実機で手動チェックリスト（Phase 5）。
+  `crates/lock` の auth クライアントも、テスト内で socket を立てて往復を確認する。
+- E2E (Phase 3): Sway 1.12 の headless 出力（pixman）で、2 出力のロック、
+  出力追加・削除、誤 PIN 後の維持、正しい PIN / パスワードでの解除を確認済み。
+- E2E (Phase 5): ayaka 実機で手動チェックリスト。
   - YubiKey 挿入 → PIN で解除
   - YubiKey 抜去 → パスワードで解除
   - パスワード無効設定で PIN のみ
@@ -268,6 +304,7 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
 
 - pacman package `nekonolock`（[nekono] repo）。バイナリ 2 本と
   `/etc/pam.d/nekonolock`、systemd-user unit 2 つ（socket activation）。
+  依存に `libxkbcommon` と `ttf-dejavu`（既定フォント）を入れる。
 - ansible role `nekonolock`（ansible-nekonodesk）: package 導入、
   `/etc/pam.d/nekonolock`、`/etc/systemd/user/nekonolock-auth.{socket,service}`、
   `swayidle` の lock コマンド差し替え。
@@ -289,13 +326,27 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
         `unlocked` → `done`。出力の削除だけは未確認。
         再現手順は `spike/02-ext-session-lock-vm.sh`（Docker + KVM が必要）。
         この測定は `--features insecure-test-unlock` を付けた検証用ビルドで
-        行った。既定ビルドは Phase 3 までキー入力を無視する（fail-closed）。）
+        行った。既定ビルドは Phase 3 までキー入力を無視していた（fail-closed）。
+        Phase 3 で認証を実装し、`insecure-test-unlock` feature は削除した。
+        `spike/02` は現在、ロックサーフェス・出力追加・認証なしのキー入力で
+        解除されないことを確認する回帰スクリプトになっている。解除までの
+        E2E は `spike/03-lock-ui-sway.sh`。）
 - [x] Phase 2: `crates/proto` と `crates/auth`（OpenPGP + PAM）+ テスト
   （2026-11-15 実装。`SOCK_SEQPACKET` + JSON、peer uid 検証、0700/0600、
   gpg の loopback 署名と VALIDSIG 検証、`libpam.so.0` の `dlopen`、
   `mock-card` / `mock-pam` による結合テスト。gpg の署名は EDDSA の実カードで
   Phase 1 に確認済みの方式を使う。PAM 実機の `/etc/pam.d/nekonolock` は Phase 4。）
-- [ ] Phase 3: `crates/lock`（単一出力 → 全出力、入力、描画）
+- [x] Phase 3: `crates/lock`（全出力、入力、描画、認証連携）
+  （2026-11-15 実装。`ext-session-lock-v1` の全出力ロックと出力追加・削除への
+  追従、`wl_keyboard` + xkbcommon の入力、外周フレーム / 20% モード帯 / 時計 /
+  入力ドット / メッセージの CPU 描画、`nekonolock-auth` への status / unlock
+  要求（別スレッド）、失敗時のロック維持。`insecure-test-unlock` は削除した。
+  設定・フォントの読み込みより先にロックを取得し、読み込み失敗時はフォールバック
+  描画でロックを維持する。
+  Sway 1.12 headless（pixman）で 2 出力、出力追加・削除、誤 PIN 後の維持、
+  正しい PIN / パスワードでの解除を確認。UI の自動テストは
+  `cargo test --workspace`。再現手順は `spike/03-lock-ui-sway.sh`
+  （Docker + モック認証ヘルパ）。）
 - [ ] Phase 4: packaging と ansible role
 - [ ] Phase 5: ayaka 適用（pam_pkcs11 / hyprlock 廃止、swayidle から起動）
 - [ ] Phase 6: inspiron 適用（当面 swayidle 無効のまま）
@@ -308,8 +359,12 @@ packaging/     # PKGBUILD (nekono-pacman-distribution へ移植)
   `--pinentry-mode loopback --passphrase-fd` による署名と検証が成功した。
   実装はこの方式を前提にする（Assuan 直叩きは不要）。
 - Sway 1.12 の `ext-session-lock-v1` で、ロック中の出力削除の挙動。
-  2026-11-14 時点で、出力追加は追従を確認済み。削除は未確認。
+  2026-11-14 時点では未確認だったが、Phase 3 で `swaymsg output HEADLESS-3
+  unplug` により削除へ追従することを確認した。
 - 時計の日本語表示に CJK フォントが必要かどうか（必要なら依存を追加）。
+- HiDPI / fractional scaling。Phase 3 は configure のサイズを 1:1 のバッファに
+  描く（`wl_surface.set_buffer_scale` は未使用）。ayaka / inspiron の実機で
+  scale 1 以外を使う場合は Phase 5 までに対応する。
 
 ## 15. 却下案
 

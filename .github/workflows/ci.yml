@@ -16,6 +16,8 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Install Wayland build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev pkg-config
       - name: cargo fmt
         run: cargo fmt --check
       - name: cargo clippy

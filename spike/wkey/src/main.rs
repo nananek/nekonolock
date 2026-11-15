@@ -89,9 +89,20 @@ fn main() -> Result<()> {
     let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=9, ()).context("wl_seat が無い")?;
     let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
 
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/tmp/wkey.xkb".to_string());
+    let mut args = std::env::args().skip(1);
+    let path = args.next().unwrap_or_else(|| "/tmp/wkey.xkb".to_string());
+    let mut codes: Vec<u32> = args
+        .map(|value| {
+            value
+                .parse()
+                .with_context(|| format!("キーコードを数値として解釈できない: {value}"))
+        })
+        .collect::<Result<_>>()?;
+    if codes.is_empty() {
+        // 後方互換: 引数がキーマップだけなら 1 キー（L キー）を送る。
+        codes.push(38);
+    }
+
     let keymap = std::fs::read(&path).with_context(|| format!("keymap を読めない: {path}"))?;
     let mut file = File::open(&path)?;
     file.seek(SeekFrom::Start(0))?;
@@ -108,9 +119,23 @@ fn main() -> Result<()> {
     std::thread::sleep(Duration::from_millis(300));
 
     let start = Instant::now();
+
+    // 最初のキーが落ちることがある（コンポジタが virtual keyboard を seat に
+    // 反映してから、ロッククライアントが wl_keyboard を作るまでに隙がある）。
+    // UI が無視する F13 を 1 回送って経路を温める。
     let time = start.elapsed().as_millis() as u32;
-    keyboard.key(time, 38, wl_keyboard::KeyState::Pressed);
-    keyboard.key(time + 10, 38, wl_keyboard::KeyState::Released);
+    keyboard.key(time, 183, wl_keyboard::KeyState::Pressed);
+    keyboard.key(time + 10, 183, wl_keyboard::KeyState::Released);
+    conn.flush()?;
+    std::thread::sleep(Duration::from_millis(150));
+
+    for code in codes {
+        let time = start.elapsed().as_millis() as u32;
+        keyboard.key(time, code, wl_keyboard::KeyState::Pressed);
+        keyboard.key(time + 10, code, wl_keyboard::KeyState::Released);
+        conn.flush()?;
+        std::thread::sleep(Duration::from_millis(60));
+    }
     conn.roundtrip()?;
     std::thread::sleep(Duration::from_millis(300));
 

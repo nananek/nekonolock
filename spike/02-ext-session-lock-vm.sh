@@ -1,13 +1,17 @@
 #!/bin/bash
 # Phase 1 spike: ext-session-lock-v1 で全出力をロックできるかを VM で確認する。
 #
+# Phase 3 で認証を実装したため、このスクリプトは「ロックサーフェスが全出力に
+# 張られ、出力追加に追従し、認証なしのキー入力では解除されない（fail closed）」
+# ことを確認する。解除まで見る回帰は spike/03-lock-ui-sway.sh を使う。
+#
 # やること:
-#   1. `crates/lock` のリリースバイナリを `--features insecure-test-unlock`
-#      付きでビルドする（既定ビルドはキー入力を無視するため）。
+#   1. `crates/lock` のリリースバイナリを既定の feature でビルドする。
 #   2. Arch Linux のゲスト rootfs（Sway + wkey）を Docker で作る。
 #   3. QEMU に Arch のカーネルと initramfs を渡して起動する。
 #   4. ゲスト内で Sway を headless バックエンドで起動し、nekonolock が
-#      2 出力をロックし、出力追加に追従し、キー入力で解除することを確認する。
+#      2 出力をロックし、出力追加に追従し、キー入力後もロックを維持することを
+#      確認する。
 #
 # 前提:
 #   - Docker（rootless 可）と /dev/kvm
@@ -18,8 +22,7 @@
 #   bash spike/02-ext-session-lock-vm.sh
 #
 # 環境変数:
-#   NEKONOLOCK_BIN  ビルド済みバイナリ（指定時は cargo build を省略。
-#                   必ず --features insecure-test-unlock 付きでビルドする）
+#   NEKONOLOCK_BIN  ビルド済みバイナリ（指定時は cargo build を省略）
 #   WKEY_BIN        ビルド済みの virtual keyboard ヘルパ（省略時は spike/wkey を
 #                   ビルドする）
 #   WORK            作業ディレクトリ（既定: mktemp -d）
@@ -42,8 +45,7 @@ echo "==> work: $work"
 if [ -n "${NEKONOLOCK_BIN:-}" ]; then
     cp "$NEKONOLOCK_BIN" "$work/overlay/usr/local/bin/nekonolock"
 else
-    cargo build --release --manifest-path "$root/Cargo.toml" -p nekonolock \
-        --features insecure-test-unlock
+    cargo build --release --manifest-path "$root/Cargo.toml" -p nekonolock
     cp "$root/target/release/nekonolock" "$work/overlay/usr/local/bin/nekonolock"
 fi
 chmod 755 "$work/overlay/usr/local/bin/nekonolock"
@@ -166,9 +168,9 @@ else
     fail=1
 fi
 
-# キー入力で解除されるか。virtual keyboard を作って 300 ms 待ってから
-# キーを送るヘルパを使う（wtype はキー送出がクライアントの wl_keyboard
-# 作成と競合して落ちることがある）。
+# 認証なしのキー入力では解除されないこと（fail closed）。virtual keyboard を
+# 作って 300 ms 待ってからキーを送るヘルパを使う（wtype はキー送出が
+# クライアントの wl_keyboard 作成と競合して落ちることがある）。
 key_ok=1
 if ! xkbcli compile-keymap --layout us >/tmp/wkey.xkb 2>/tmp/xkbcli.log; then
     note "FAIL key: xkbcli"
@@ -190,18 +192,16 @@ for _ in $(seq 1 50); do
     sleep 0.1
 done
 if kill -0 "$lock_pid" 2>/dev/null; then
-    note "FAIL key: キー入力後も終了しない"
+    note "key: ロック維持 (OK)"
     kill "$lock_pid" 2>/dev/null
-    fail=1
+    wait "$lock_pid" 2>/dev/null
 else
-    wait "$lock_pid"
-    rc=$?
-    note "lock exit=$rc"
-    [ "$rc" -eq 0 ] || fail=1
+    note "FAIL key: 認証なしのキー入力で終了した"
+    fail=1
 fi
 
-for word in key-pressed unlocked done; do
-    if grep -qx "$word" /tmp/lock.log; then
+for word in "keyboard: ready" "keyboard: enter" locked; do
+    if grep -q "$word" /tmp/lock.log; then
         note "$word: OK"
     else
         note "FAIL: $word が無い"
