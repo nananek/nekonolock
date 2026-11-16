@@ -3,8 +3,10 @@
 //! カードを握るのは scdaemon だけにしたいので、ここでは `gpg` を子プロセスとして
 //! 呼ぶ。PIN は argv ではなく stdin（`--passphrase-fd 0`）で渡す。
 
+use std::ffi::CStr;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -13,6 +15,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
+
+/// 子プロセスの gpg に渡す challenge / signature の fd。
+///
+/// gpg にはパスではなく `/proc/self/fd/<n>` を渡し、ユーザーが差し替えられる
+/// ディレクトリ内の名前を root がたどらないようにする。
+const CHALLENGE_FD: RawFd = 198;
+const SIGNATURE_FD: RawFd = 199;
 
 /// 子プロセスを実行するユーザー。PAM モジュールが root から呼ぶときに使う。
 ///
@@ -24,6 +33,13 @@ pub struct Identity {
     pub name: String,
     pub home: PathBuf,
     pub runtime_dir: PathBuf,
+}
+
+/// 署名に使う開いたファイル。gpg には fd を渡し、このハンドルから読む。
+#[derive(Debug)]
+struct SignFiles {
+    challenge: fs::File,
+    signature: fs::File,
 }
 
 /// カード署名の抽象。テストではモックに差し替える。
@@ -163,20 +179,58 @@ impl GpgCard {
     /// 署名用の一時ディレクトリを作る。
     ///
     /// 子プロセスを別ユーザーに落とす場合、root が作った 0700 の `/tmp` 配下
-    /// にはそのユーザーが入れない。そこでユーザーの runtime dir の中に作り、
-    /// 所有権をユーザーへ移す。中身はチャレンジと署名だけで秘密ではない。
+    /// にはそのユーザーが入れない。そこでユーザーの runtime dir の中に作る。
+    /// ただし runtime dir はユーザー所有なので、このディレクトリは作成後に
+    /// rename / symlink へ差し替えられる。パスを信頼せず、ファイル操作は
+    /// 開いた fd だけを基準にする。
     fn private_tempdir(&self, prefix: &str) -> Result<tempfile::TempDir, CardError> {
         match &self.identity {
-            Some(identity) => {
-                let dir = tempfile::Builder::new()
-                    .prefix(prefix)
-                    .tempdir_in(&identity.runtime_dir)?;
-                std::os::unix::fs::chown(dir.path(), Some(identity.uid), Some(identity.gid))?;
-                fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
-                Ok(dir)
-            }
+            Some(identity) => Ok(tempfile::Builder::new()
+                .prefix(prefix)
+                .tempdir_in(&identity.runtime_dir)?),
             None => Ok(tempfile::Builder::new().prefix(prefix).tempdir()?),
         }
+    }
+
+    /// 署名対象と署名先を、ディレクトリの fd を基準に新規作成する。
+    ///
+    /// 既存の名前（symlink を含む）があれば失敗する。ユーザーがディレクトリ
+    /// を差し替えていても、root がユーザー指定のパスを書き換えることはない。
+    fn prepare_sign_files(
+        &self,
+        challenge: &[u8],
+        dir: &tempfile::TempDir,
+    ) -> Result<SignFiles, CardError> {
+        let dir_file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(dir.path())?;
+
+        let mut challenge_file = open_new_at(&dir_file, c"challenge", libc::O_WRONLY, 0o400)?;
+        let signature_file = open_new_at(&dir_file, c"challenge.sig", libc::O_RDWR, 0o600)?;
+
+        challenge_file.write_all(challenge)?;
+        let challenge_mode = if self.identity.is_some() {
+            // ユーザー側の gpg は /proc/self/fd 経由で読む。
+            0o444
+        } else {
+            0o400
+        };
+        challenge_file.set_permissions(fs::Permissions::from_mode(challenge_mode))?;
+
+        if let Some(identity) = &self.identity {
+            let fd = signature_file.as_raw_fd();
+            // SAFETY: fd は開いている signature_file が所有している。
+            if unsafe { libc::fchown(fd, identity.uid, identity.gid) } != 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+        }
+        signature_file.set_permissions(fs::Permissions::from_mode(0o600))?;
+
+        Ok(SignFiles {
+            challenge: challenge_file,
+            signature: signature_file,
+        })
     }
 
     /// 設定鍵の keygrip を公開鍵から求める。
@@ -313,6 +367,49 @@ fn switch_identity(command: &mut Command, uid: u32, gid: u32) {
     }
 }
 
+/// `dir` からの相対パスで新しい通常ファイルを作る。
+///
+/// `O_EXCL` により既存の名前（symlink を含む）には触れない。`O_NOFOLLOW` は
+/// 最終コンポーネントの symlink を辿らないための二重の防御。
+#[allow(unsafe_code)]
+fn open_new_at(
+    dir: &fs::File,
+    name: &CStr,
+    access: i32,
+    mode: libc::mode_t,
+) -> Result<fs::File, CardError> {
+    let fd = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            access | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: openat が返した新しい fd の所有権を受け取る。
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+
+/// 子プロセスで `file` を `target` の fd 番号へ複製する。
+///
+/// `/proc/self/fd/<target>` を gpg に渡すため、exec 後も残す。
+#[allow(unsafe_code)]
+fn inherit_fd(command: &mut Command, file: &fs::File, target: RawFd) {
+    let source = file.as_raw_fd();
+    // SAFETY: pre_exec の契約どおり、子プロセスで dup2 だけを行う。
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(source, target) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 impl CardSigner for GpgCard {
     fn present(&self) -> bool {
         let mut command = self.command();
@@ -331,17 +428,11 @@ impl CardSigner for GpgCard {
         self.clear_cached_passphrase()?;
 
         let dir = self.private_tempdir("nekonolock-sign-")?;
-        let challenge_path = dir.path().join("challenge");
-        let signature_path = dir.path().join("challenge.sig");
-        fs::write(&challenge_path, challenge)?;
-        if let Some(identity) = &self.identity {
-            // ディレクトリだけでなくチャレンジもユーザーが読めるようにする。
-            // 署名対象は秘密ではない。
-            std::os::unix::fs::chown(&challenge_path, Some(identity.uid), Some(identity.gid))?;
-            fs::set_permissions(&challenge_path, fs::Permissions::from_mode(0o600))?;
-        }
+        let files = self.prepare_sign_files(challenge, &dir)?;
 
         let mut command = self.command();
+        inherit_fd(&mut command, &files.challenge, CHALLENGE_FD);
+        inherit_fd(&mut command, &files.signature, SIGNATURE_FD);
         command
             .args([
                 "--batch",
@@ -356,8 +447,8 @@ impl CardSigner for GpgCard {
                 "0",
                 "--output",
             ])
-            .arg(&signature_path)
-            .arg(&challenge_path);
+            .arg(format!("/proc/self/fd/{SIGNATURE_FD}"))
+            .arg(format!("/proc/self/fd/{CHALLENGE_FD}"));
 
         // PIN は改行で終端する。argv には出さない。使い終わったら zeroize する。
         let stdin = Zeroizing::new(format!("{pin}\n"));
@@ -372,7 +463,11 @@ impl CardSigner for GpgCard {
             return Err(classify_sign_failure(&stderr));
         }
 
-        let signature = fs::read(&signature_path)?;
+        // 署名はユーザーが差し替えられるパスからではなく、開いた fd から読む。
+        let mut signature_file = files.signature;
+        signature_file.seek(SeekFrom::Start(0))?;
+        let mut signature = Vec::new();
+        signature_file.read_to_end(&mut signature)?;
         if signature.is_empty() {
             return Err(CardError::Unavailable("gpg が空の署名を返した".to_string()));
         }
@@ -731,6 +826,63 @@ mod tests {
             b"ERR 67109144 IPC parameter error <GPG Agent>\n"
         ));
         assert!(!agent_command_succeeded(b"OK\nERR 67109144 rejected\n"));
+    }
+
+    #[test]
+    fn prepare_sign_files_refuses_an_existing_symlink() {
+        let dir = tempfile::Builder::new()
+            .prefix("nekonolock-test-")
+            .tempdir()
+            .unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, b"UNCHANGED").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("challenge")).unwrap();
+
+        let card = GpgCard::new("A".repeat(40), Duration::from_secs(1));
+        let err = card.prepare_sign_files(b"challenge", &dir).unwrap_err();
+        assert!(matches!(err, CardError::Io(_)), "unexpected: {err:?}");
+        assert_eq!(fs::read(&target).unwrap(), b"UNCHANGED");
+    }
+
+    #[test]
+    fn sign_reads_the_signature_from_the_open_descriptor() {
+        let dir = tempfile::Builder::new()
+            .prefix("nekonolock-gpg-test-")
+            .tempdir()
+            .unwrap();
+        let gpg = dir.path().join("gpg");
+        let agent = dir.path().join("gpg-connect-agent");
+        fs::write(
+            &gpg,
+            "\
+#!/bin/sh
+case \" $* \" in
+  *\" --list-keys \"*)
+    echo 'grp:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    exit 0
+    ;;
+  *\" --detach-sign \"*)
+    prev=\"\"
+    out=\"\"
+    for arg in \"$@\"; do
+      if [ \"$prev\" = \"--output\" ]; then out=\"$arg\"; fi
+      prev=\"$arg\"
+    done
+    printf 'signature' > \"$out\"
+    exit 0
+    ;;
+esac
+exit 0
+",
+        )
+        .unwrap();
+        fs::write(&agent, "#!/bin/sh\necho OK\nexit 0\n").unwrap();
+        fs::set_permissions(&gpg, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let card = GpgCard::new("A".repeat(40), Duration::from_secs(5)).with_program(&gpg);
+        let signature = card.sign(b"challenge", "123456").unwrap();
+        assert_eq!(signature, b"signature");
     }
 
     #[test]

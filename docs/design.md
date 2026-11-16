@@ -402,6 +402,10 @@ users = []          # 空なら全ユーザー
 - sudo 用の署名は実 uid の gpg-agent にさせるが、検証は root 側の一時
   keyring に取り込んだ root 所有の公開鍵だけで行う。`gpg` は絶対パス
   （`/usr/bin/gpg`）で起動し、環境変数は必要なものだけを設定する。
+- sudo 用の署名で root がユーザー所有の runtime dir に一時ファイルを作る
+  場合、そのパスを信頼しない。challenge / signature はディレクトリの fd を
+  基準に `O_EXCL` / `O_NOFOLLOW` で作り、gpg には `/proc/self/fd` で渡す。
+  署名も開いた fd から読む。
 - sudo 用の設定と公開鍵は root 所有で、group / other から書き換えられない
   ことをモジュールが確認する。symlink は辿らず、開いた fd のメタデータを見る。
 
