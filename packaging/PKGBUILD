@@ -9,7 +9,7 @@
 # 配布先は [nekono] repo。移植手順と検証方法は packaging/README.md。
 
 pkgname=nekonolock
-pkgver=0.3.2
+pkgver=0.3.3
 pkgrel=1
 pkgdesc="Sway screen locker unlocked by a YubiKey OpenPGP challenge or a password"
 arch=('x86_64')
