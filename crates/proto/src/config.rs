@@ -33,8 +33,9 @@ pub struct UiConfig {
     pub font: String,
     /// 時計のフォント。空なら `font` を使う。
     pub clock_font: String,
-    /// 左上に出す短いラベル。空なら描かない。
-    pub label: String,
+    /// 左上に出す短いラベル。`None` ならマシン名（hostname）、
+    /// 空文字なら描かない。
+    pub label: Option<String>,
     /// 背景の上端。`background_bottom` と組で縦グラデーションにする。
     pub background: String,
     /// 背景の下端。
@@ -59,7 +60,7 @@ impl Default for UiConfig {
             date_format: "%A, %-d %B %Y".to_string(),
             font: "/usr/share/fonts/TTF/DejaVuSans.ttf".to_string(),
             clock_font: "/usr/share/fonts/TTF/DejaVuSans-ExtraLight.ttf".to_string(),
-            label: "NEKONOLOCK".to_string(),
+            label: None,
             background: "#15181B".to_string(),
             background_bottom: "#0B0D0F".to_string(),
             foreground: "#F2EFE7".to_string(),
@@ -406,6 +407,7 @@ mod tests {
         assert_eq!(config.ui.clock_format, "%H:%M");
         assert_eq!(config.ui.date_format, "%A, %-d %B %Y");
         assert_eq!(config.ui.background, "#15181B");
+        assert_eq!(config.ui.label, None);
         assert_eq!(config.ui.blank_after_sec, 60);
         config.validate().unwrap();
     }
@@ -445,10 +447,18 @@ service = "nekonolock-test"
         assert_eq!(config.ui.blank_after_sec, 30);
         assert_eq!(config.ui.background, "#101010");
         assert_eq!(config.ui.background_bottom, "#202020");
-        assert_eq!(config.ui.label, "TEST");
+        assert_eq!(config.ui.label.as_deref(), Some("TEST"));
         assert_eq!(config.auth.challenge_bytes, 48);
         assert_eq!(config.auth.timeout_sec, 30);
         assert_eq!(config.pam.service, "nekonolock-test");
+    }
+
+    #[test]
+    fn label_is_optional_and_empty_disables_it() {
+        let path = temp_config("[ui]\nlabel = \"\"\n");
+        let config = Config::load(Some(&path)).unwrap();
+        assert_eq!(config.ui.label.as_deref(), Some(""));
+        fs::remove_file(&path).ok();
     }
 
     #[test]

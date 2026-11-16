@@ -884,7 +884,7 @@ mod tests {
             clock: "14:53",
             date: "Sunday, 15 November 2026",
             message: "",
-            label: "NEKONOLOCK",
+            label: "THINKPAD",
             blank,
         }
     }
