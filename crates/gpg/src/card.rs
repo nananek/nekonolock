@@ -238,6 +238,14 @@ impl GpgCard {
                     "gpg-agent のキャッシュを消せなかった",
                 )));
             }
+            // gpg-connect-agent はエージェントが ERR を返しても終了コード 0 に
+            // なる。終了コードだけを見ると、キャッシュが残ったまま署名へ進み、
+            // 温まったキャッシュの PIN で解除できてしまう。
+            if !agent_command_succeeded(&output.stdout) {
+                return Err(CardError::Unavailable(
+                    "gpg-agent が CLEAR_PASSPHRASE を拒否した".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -410,6 +418,24 @@ impl CardSigner for GpgCard {
 
 fn normalize_key(key: &str) -> String {
     key.trim().trim_end_matches('!').to_string()
+}
+
+/// gpg-connect-agent の標準出力がコマンド成功を示すか。
+///
+/// エージェントがコマンドを拒否しても gpg-connect-agent は終了コード 0 を
+/// 返すため、`OK` が 1 つ以上あり `ERR` が無いことを確認する。
+fn agent_command_succeeded(stdout: &[u8]) -> bool {
+    let mut saw_ok = false;
+    for line in String::from_utf8_lossy(stdout).lines() {
+        let line = line.trim();
+        if line.starts_with("ERR") {
+            return false;
+        }
+        if line == "OK" {
+            saw_ok = true;
+        }
+    }
+    saw_ok
 }
 
 /// `gpg --with-colons --with-keygrip --list-keys` の出力から keygrip を取り出す。
@@ -694,6 +720,17 @@ mod tests {
     fn normalize_key_strips_suffix() {
         assert_eq!(normalize_key(" ABCD! "), "ABCD");
         assert_eq!(normalize_key(""), "");
+    }
+
+    #[test]
+    fn agent_command_requires_ok_and_rejects_err() {
+        assert!(agent_command_succeeded(b"OK\n"));
+        assert!(agent_command_succeeded(b" OK \r\n"));
+        assert!(!agent_command_succeeded(b""));
+        assert!(!agent_command_succeeded(
+            b"ERR 67109144 IPC parameter error <GPG Agent>\n"
+        ));
+        assert!(!agent_command_succeeded(b"OK\nERR 67109144 rejected\n"));
     }
 
     #[test]
