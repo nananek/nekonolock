@@ -56,7 +56,7 @@ fn write_preview(
         clock: "14:53",
         date: "Sunday, 15 November 2026",
         message: "",
-        label: "NEKONOLOCK",
+        label: "THINKPAD",
         blank: false,
     };
     renderer.render(&mut canvas, stride, WIDTH, HEIGHT, theme, &view);

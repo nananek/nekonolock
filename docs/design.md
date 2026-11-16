@@ -237,7 +237,7 @@ clock_format    = "%H:%M"
 date_format     = "%A, %-d %B %Y"   # 描画時に大文字化する
 font            = "/usr/share/fonts/TTF/DejaVuSans.ttf"
 clock_font      = "/usr/share/fonts/TTF/DejaVuSans-ExtraLight.ttf"
-label           = "NEKONOLOCK"      # 左上の短いラベル。描画時に大文字化する
+# label         = "MYLAPTOP"        # 省略時はマシン名 (hostname)。描画時に大文字化する
 background      = "#15181B"
 background_bottom = "#0B0D0F"
 foreground      = "#F2EFE7"
@@ -282,6 +282,7 @@ password_accent = "#A34A3A"
 - 両方 `false` は起動時に拒否する。
 - `clock_format` / `date_format` は空でなく `chrono` が解釈できることを
   起動時に確認する。`date_format` と `label` は描画時に大文字化する。
+- `label` を省略するとマシン名（hostname）を左上に出す。空文字にすると描かない。
 - `blank_after_sec` はロック中の無入力時間。経過すると画面を純黒にし、キー入力で
   戻す。`0` で無効。認証待ちの間は黒くしない。
 - `max_attempts` は連打抑止のクールダウン（§5.4）。

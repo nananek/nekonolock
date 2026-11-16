@@ -16,6 +16,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -116,7 +117,7 @@ fn run() -> Result<()> {
         clock_text,
         date_format: default_date_format,
         date_text,
-        label: default_ui.label.clone(),
+        label: default_ui.label.clone().unwrap_or_else(machine_name),
         blank_after: Duration::from_secs(default_ui.blank_after_sec),
         blanked: false,
         last_activity: Instant::now(),
@@ -313,7 +314,7 @@ impl App {
         }
         self.auth_timeout = Duration::from_secs(config.auth.timeout_sec.clamp(1, 600));
         self.status_timeout = STATUS_TIMEOUT.min(self.auth_timeout);
-        self.label = config.ui.label.clone();
+        self.label = config.ui.label.clone().unwrap_or_else(machine_name);
         self.blank_after = Duration::from_secs(config.ui.blank_after_sec.min(86_400));
         self.last_activity = Instant::now();
         self.clock_text = clock::format_now(&self.clock_format);
@@ -797,6 +798,34 @@ fn blank_due(now: Instant, last_activity: Instant, blank_after: Duration, pendin
     !blank_after.is_zero() && !pending && now.duration_since(last_activity) >= blank_after
 }
 
+/// 設定で `label` を省略したときに左上へ出すマシン名。
+/// 読めなければ空文字にして、ラベルを描かない。
+fn machine_name() -> String {
+    machine_name_from(
+        fs::read_to_string("/proc/sys/kernel/hostname")
+            .ok()
+            .as_deref(),
+        env::var("HOSTNAME").ok().as_deref(),
+    )
+}
+
+/// hostname の候補を順に見て、最初の使える名前を返す。
+fn machine_name_from(proc_hostname: Option<&str>, env_hostname: Option<&str>) -> String {
+    [proc_hostname, env_hostname]
+        .into_iter()
+        .flatten()
+        .find_map(normalize_hostname)
+        .unwrap_or_default()
+}
+
+fn normalize_hostname(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().any(char::is_control) {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 impl SessionLockHandler for App {
     fn locked(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, session_lock: SessionLock) {
         println!("locked");
@@ -1172,6 +1201,20 @@ mod tests {
             Duration::from_secs(5),
             false
         ));
+    }
+
+    #[test]
+    fn machine_name_falls_back_and_rejects_control_characters() {
+        assert_eq!(machine_name_from(Some("sway-box\n"), None), "sway-box");
+        assert_eq!(
+            machine_name_from(Some("  "), Some(" fallback ")),
+            "fallback"
+        );
+        assert_eq!(
+            machine_name_from(Some("bad\nname"), Some("fallback")),
+            "fallback"
+        );
+        assert_eq!(machine_name_from(None, None), "");
     }
 
     #[test]
