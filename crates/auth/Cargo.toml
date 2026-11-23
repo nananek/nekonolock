@@ -19,7 +19,7 @@ libc = "0.2"
 libloading = "0.9"
 nekonolock-proto = { path = "../proto" }
 nekonolock-gpg = { path = "../gpg" }
-nix = { version = "0.31", features = ["process", "socket", "time", "user"] }
+nix = { version = "0.32", features = ["process", "socket", "time", "user"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"

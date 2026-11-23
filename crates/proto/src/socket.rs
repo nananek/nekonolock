@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -19,13 +19,6 @@ use nix::sys::time::TimeVal;
 use nix::unistd::geteuid;
 
 use crate::protocol::MAX_MESSAGE_BYTES;
-
-/// `accept4` が返す生の fd を所有権つきに変える。ここだけが proto の unsafe。
-#[allow(unsafe_code)]
-fn own_fd(fd: RawFd) -> OwnedFd {
-    // SAFETY: fd は直前に accept4 が返した新しい fd で、他に所有者はいない。
-    unsafe { OwnedFd::from_raw_fd(fd) }
-}
 
 /// socket の既定パス。`$XDG_RUNTIME_DIR` が無い環境では認証ヘルパを起動できない。
 pub fn default_socket_path() -> Result<PathBuf, SocketError> {
@@ -141,8 +134,8 @@ impl Listener {
     /// 同じ uid の接続だけを受け付ける。他人の uid は黙って閉じる。
     pub fn accept_allowed(&self) -> Result<Connection, SocketError> {
         loop {
-            let fd = match accept4(self.fd.as_raw_fd(), SockFlag::SOCK_CLOEXEC) {
-                Ok(fd) => own_fd(fd),
+            let fd = match accept4(&self.fd, SockFlag::SOCK_CLOEXEC) {
+                Ok(fd) => fd,
                 Err(nix::Error::EINTR) => continue,
                 Err(err) => return Err(err.into()),
             };
