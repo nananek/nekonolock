@@ -28,7 +28,7 @@ impl Mode {
     /// モード capsule に出す名前。画面のコピーはすべて大文字に揃える。
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pin => "YUBIKEY PIN",
+            Self::Pin => "CARD PIN",
             Self::Password => "PASSWORD",
         }
     }
@@ -365,8 +365,8 @@ impl UiState {
                     "AUTH FAILED".to_string()
                 }
             }
-            Message::NoCard => "YUBIKEY NOT FOUND".to_string(),
-            Message::GpgError => "YUBIKEY ERROR".to_string(),
+            Message::NoCard => "CARD NOT FOUND".to_string(),
+            Message::GpgError => "CARD ERROR".to_string(),
             Message::PamError => "PAM ERROR".to_string(),
             Message::HelperUnavailable => "AUTH HELPER UNAVAILABLE".to_string(),
             Message::BadRequest => "BAD REQUEST".to_string(),
@@ -434,7 +434,7 @@ mod tests {
         let mut ui = state();
         ui.apply_status(false, &[AuthKind::Pin]);
         assert_eq!(ui.mode(), Mode::Pin);
-        assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
+        assert_eq!(ui.status_line(Instant::now()), "CARD NOT FOUND");
     }
 
     #[test]
@@ -448,7 +448,7 @@ mod tests {
         ui.apply_status(false, &[AuthKind::Pin, AuthKind::Password]);
         assert_eq!(ui.mode(), Mode::Password);
         assert_eq!(ui.secret(), "");
-        assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
+        assert_eq!(ui.status_line(Instant::now()), "CARD NOT FOUND");
 
         // カードを挿し直しても PIN には戻さない。
         ui.apply_status(true, &[AuthKind::Pin, AuthKind::Password]);
@@ -464,7 +464,7 @@ mod tests {
         ui.apply_status(false, &[AuthKind::Pin]);
         assert_eq!(ui.mode(), Mode::Pin);
         assert_eq!(ui.secret(), "");
-        assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
+        assert_eq!(ui.status_line(Instant::now()), "CARD NOT FOUND");
     }
 
     #[test]
@@ -610,7 +610,7 @@ mod tests {
 
         ui.finish_failure(Reason::NoCard, Instant::now());
         assert_eq!(ui.mode(), Mode::Password);
-        assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
+        assert_eq!(ui.status_line(Instant::now()), "CARD NOT FOUND");
         assert_eq!(ui.attempts(), 0);
     }
 
@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(ui.mode(), Mode::Pin);
         ui.finish_failure(Reason::NoCard, Instant::now());
         assert_eq!(ui.mode(), Mode::Pin);
-        assert_eq!(ui.status_line(Instant::now()), "YUBIKEY NOT FOUND");
+        assert_eq!(ui.status_line(Instant::now()), "CARD NOT FOUND");
     }
 
     #[test]

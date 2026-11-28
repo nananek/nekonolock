@@ -144,9 +144,11 @@
       - nekonolock_sudo_pam_service is match('^[A-Za-z0-9_.-]+$')
       - nekonolock_sudo_pam_include is match('^[A-Za-z0-9_.-]+$')
       - nekonolock_sudo_users | select('match', '^[A-Za-z0-9_.@-]+$') | list | length == nekonolock_sudo_users | length
+      - nekonolock_sudo_timestamp_type in ['', 'tty', 'ppid', 'global']
     fail_msg: >-
       nekonolock_sudo_auth を有効にするには、16/40 桁の key、ASCII armored の
       公開鍵、絶対パスの public_key_path/config、安全な PAM サービス名が必要。
+      nekonolock_sudo_timestamp_type は tty / ppid / global / 空 のどれか。
   when: nekonolock_sudo_auth | bool
   tags: always
 
@@ -183,7 +185,7 @@
     mode: "0755"
   when: nekonolock_sudo_auth | bool
 
-- name: Deploy the sudo YubiKey config
+- name: Deploy the sudo card config
   ansible.builtin.template:
     src: nekonolock-sudo.toml.j2
     dest: "{{ nekonolock_sudo_config }}"
@@ -203,7 +205,31 @@
     backup: true
   when: nekonolock_sudo_auth | bool
 
-- name: Enable the YubiKey prompt for sudo
+# sudo の timestamp は PAM の外側で決まる。global / ppid だと 1 回の認証が
+# 別の pty にも効くため、パスワード認証と同じ per-pty の挙動にする。
+# /etc/sudoers.d を include していないホストでは効かないので、その場合は
+# nekonolock_sudo_timestamp_type を空にしてホスト側で設定する。
+- name: Enforce per-tty sudo timestamps
+  ansible.builtin.copy:
+    content: |
+      # Managed by ansible (nekonolock).
+      Defaults timestamp_type={{ nekonolock_sudo_timestamp_type }}
+    dest: /etc/sudoers.d/nekonolock
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  when:
+    - nekonolock_sudo_auth | bool
+    - (nekonolock_sudo_timestamp_type | length) > 0
+
+- name: Remove the sudo timestamp policy
+  ansible.builtin.file:
+    path: /etc/sudoers.d/nekonolock
+    state: absent
+  when: not (nekonolock_sudo_auth | bool)
+
+- name: Enable the card prompt for sudo
   ansible.builtin.lineinfile:
     path: "/etc/pam.d/{{ nekonolock_sudo_pam_service }}"
     regexp: '^auth\s+sufficient\s+pam_nekonolock\.so(\s|$)'
@@ -213,7 +239,7 @@
   when: nekonolock_sudo_auth | bool
 
 # 無効化したときは、role が入れた 1 行だけを消す。PAM の他の行は触らない。
-- name: Disable the YubiKey prompt for sudo
+- name: Disable the card prompt for sudo
   ansible.builtin.lineinfile:
     path: "/etc/pam.d/{{ nekonolock_sudo_pam_service }}"
     regexp: '^auth\s+sufficient\s+pam_nekonolock\.so(\s|$)'

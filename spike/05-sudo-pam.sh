@@ -2,12 +2,16 @@
 # Phase 7: sudo 用 PAM モジュールを Docker 内でビルドし、PAM スタックから
 # pam_authenticate を呼ぶ。
 #
-# 実カードは使わない。テストユーザーのソフトウェア GPG 鍵で署名し、
-# `gpg --card-status` だけを偽装して、署名・検証・PIN の経路を通す。
+# 実カードは使わない。テストユーザーのソフトウェア GPG 鍵を
+# /etc/nekonolock/sudo-key.asc（root 所有）に秘密鍵として置き、PAM モジュールが
+# root 専用の一時 homedir に取り込んで署名する経路を通す。ユーザーの
+# gpg-agent は使わない。実カードでは公開鍵を置き、root 側の scdaemon が
+# カードを開いて署名する。
 # 確認すること:
 #   1. 設定が無いときは PAM_IGNORE を返し、パスワード側へフォールバックする
 #   2. 正しい PIN（鍵のパスフレーズ）なら pam_authenticate が成功する
-#   3. 間違った PIN なら PAM_IGNORE を返し、required の pam_deny で失敗する
+#   3. ユーザーの gpg-agent が温まっていても、root 専用の一時 agent で
+#      間違った PIN を拒否する（PIN 検証をユーザー agent に委ねない回帰テスト）
 #
 # 前提:
 #   - Docker（rootless 可）
@@ -158,7 +162,7 @@ PAM
 echo 'tester ALL=(ALL) ALL' >/etc/sudoers.d/tester
 chmod 0440 /etc/sudoers.d/tester
 
-# 3. ソフトウェア鍵を作り、card-status だけを偽装する。
+# 3. ソフトウェア鍵を作り、秘密鍵を信頼した鍵ファイルに置く。
 mkdir -p /etc/nekonolock
 su tester -c 'gpg --batch --pinentry-mode loopback --passphrase test-password \
     --quick-generate-key "Tester <tester@example>" ed25519 sign 1d' >/tmp/gpg.log 2>&1
@@ -169,7 +173,8 @@ if [ -z "$fpr" ]; then
     cat /tmp/gpg.log
     exit 1
 fi
-su tester -c "gpg --batch --armor --export '$fpr'" >/etc/nekonolock/sudo-key.asc
+su tester -c "gpg --batch --pinentry-mode loopback --passphrase test-password \
+    --armor --export-secret-keys '$fpr'" >/etc/nekonolock/sudo-key.asc
 cat >/etc/nekonolock/sudo.toml <<TOML
 [sudo]
 enabled = true
@@ -182,29 +187,9 @@ TOML
 chmod 644 /etc/nekonolock/sudo.toml /etc/nekonolock/sudo-key.asc
 chmod 755 /etc/nekonolock
 
-mv /usr/bin/gpg /usr/bin/gpg.real
-cat >/tmp/fakegpg.c <<'C'
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-
-int main(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--card-status") == 0) {
-            printf("General key info..: pub  ed25519/%s 2026-11-15 Tester <tester@example>\n",
-                   KEY_ID);
-            printf("Signature key ....: %s\n", FPR);
-            return 0;
-        }
-    }
-    execv("/usr/bin/gpg.real", argv);
-    perror("execv");
-    return 127;
-}
-C
-gcc -O2 -DKEY_ID="\"$key\"" -DFPR="\"$fpr\"" -o /usr/bin/gpg /tmp/fakegpg.c
-chmod 755 /usr/bin/gpg
-
+# 実カードの代わりに、信頼した鍵ファイルへソフトウェア秘密鍵を置く。
+# PAM モジュールは root 専用の homedir にこれを取り込み、root の agent で
+# 署名する。ユーザーの gpg-agent は使わない。
 su tester -c 'gpgconf --kill gpg-agent >/dev/null 2>&1 || true'
 if su tester -c 'printf "%s\n" test-password | sudo -S -k /bin/true' >/tmp/f2.log 2>&1; then
     note "ok: 正しい PIN で sudo が成功"
@@ -214,9 +199,9 @@ else
     fail=1
 fi
 
-# 直前の成功で gpg-agent が PIN をキャッシュしている。キャッシュが残ると
-# 間違った PIN でも署名できてしまうため、テストの前提として消す。
-su tester -c 'gpgconf --kill gpg-agent >/dev/null 2>&1 || true'
+# 直前の成功でユーザーの gpg-agent は PIN をキャッシュしているが、sudo は
+# root 専用の一時 agent（ignore-cache-for-signing、TTL 0）で署名するため、
+# ユーザーの agent を止めなくても間違った PIN は拒否される。
 if su tester -c 'printf "%s\n" wrong-pin | sudo -S -k /bin/true' >/tmp/f3.log 2>&1; then
     note "FAIL: 間違った PIN で sudo が成功した"
     cat /tmp/f3.log

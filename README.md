@@ -1,12 +1,12 @@
 # nekonolock
 
-Sway (wlroots) 用の小さなスクリーンロッカー。YubiKey の OpenPGP applet と
-パスワードの両方で解除でき、scdaemon と pcscd のカード取り合いを
+Sway (wlroots) 用の小さなスクリーンロッカー。OpenPGP カード（YubiKey など）の
+チャレンジ署名とパスワードの両方で解除でき、scdaemon と pcscd のカード取り合いを
 構造的に起こさないことを目的とする。
 
 v0.3.0 以降では sudo 用 PAM モジュール `pam_nekonolock.so` を package に同梱する。
-sudo はユーザーの `nekonolock-auth` socket を使わず、root 所有の設定と
-公開鍵だけで認証する。
+sudo はユーザーの `nekonolock-auth` socket もユーザーの gpg-agent も使わず、
+root 所有の設定と鍵、root 管理の一時 agent で認証する。
 
 既定は濃いチャコールの **Ink**。明るい **Paper** は `[ui]` の色と時計フォントを
 差し替えて使う。どちらも上端の accent line、モード capsule、入力欄の枠で

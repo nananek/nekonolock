@@ -56,8 +56,8 @@
 
 ## ADR-0006: パスワード解除は既定で有効、設定で無効化できる
 
-- 決定: `[auth] password = true` を既定。`false` で YubiKey 必須にできる。
-- 理由: YubiKey を挿し忘れたときの締め出しを避ける。一方で、
+- 決定: `[auth] password = true` を既定。`false` でカード必須にできる。
+- 理由: カードを挿し忘れたときの締め出しを避ける。一方で、
   持ち出し端末では PIN のみにしたいという要求もある。
 - 補足: 両方 `false` は起動時に拒否する。
 
@@ -319,19 +319,22 @@
 
 ## ADR-0027: sudo 用 PAM モジュールはユーザーのヘルパ socket を信頼しない
 
-- 決定: sudo の YubiKey 認証は `pam_nekonolock.so` が行う。署名は実 uid の
-  ユーザーとして `gpg` を実行して gpg-agent / scdaemon にさせ、検証は root
-  側の一時 keyring に取り込んだ `/etc/nekonolock/sudo-key.asc` だけで行う。
-  設定は root 所有の `/etc/nekonolock/sudo.toml` を読み、ユーザーの
-  `~/.config/nekonolock/config.toml` と `nekonolock-auth` socket は使わない。
-- 理由: `nekonolock-auth` はユーザーが起動・停止・差し替えできる。その応答を
-  root の認証に使うと、同じ uid の攻撃者が偽のヘルパを立てて sudo を
-  通せてしまう。root への権限境界では、ユーザーが制御できるプロセスの
-  応答を信じてはならない。共有するのは `crates/gpg` の署名・検証コードだけに
-  する。
-- 署名と検証を分ける理由: カードを扱えるのはユーザーの gpg-agent / scdaemon
-  だから署名はユーザー側で行う。一方、検証と「どの鍵を信頼するか」は root 側に
-  置かないと、ユーザーが自分の鍵で署名して sudo を通せてしまう。
+- 決定: sudo の OpenPGP カード認証は `pam_nekonolock.so` が行う。署名は root
+  専用の一時 homedir に信頼した鍵を取り込み、root の gpg-agent / scdaemon で
+  行う。検証は root 側の別の一時 keyring に取り込んだ
+  `/etc/nekonolock/sudo-key.asc` だけで行う。設定は root 所有の
+  `/etc/nekonolock/sudo.toml` を読み、ユーザーの
+  `~/.config/nekonolock/config.toml`、`nekonolock-auth` socket、ユーザーの
+  gpg-agent は使わない。
+- 理由: `nekonolock-auth` も gpg-agent も同じ uid のプロセスが起動・停止・
+  差し替えできる。その応答や署名を root の認証に使うと、同じ uid の攻撃者が
+  偽のヘルパや agent を立てて sudo を通せてしまう。root への権限境界では、
+  ユーザーが制御できるプロセスの応答を信じてはならない。共有するのは
+  `crates/gpg` の署名・検証コードだけにする。
+- 署名と検証を分ける理由: 署名は root の一時 homedir で行うが、署名に使う
+  カードと鍵は信頼した設定のものだけにする。検証も root 側に置き、
+  「どの鍵を信頼するか」をユーザーに触らせない。ユーザーの agent に署名を
+  委ねない理由は ADR-0035。
 - 失敗時は `PAM_IGNORE` を返し、PAM スタックのパスワード認証へフォールバック
   する。`auth sufficient pam_nekonolock.so` を `auth include system-auth` の
   直前に置く。誤 PIN はカードのリトライ回数だけを消費し、`pam_faillock` には
@@ -343,33 +346,39 @@
   プロセスと socket が増えるだけで、信頼の置き場所は変わらない。
 - 却下: ユーザーの `~/.config/nekonolock/config.toml` の `[auth] key` を
   sudo でも使う — ユーザーが鍵を差し替えられる。
-- 却下: sudo の YubiKey を既定で必須にする — カードを忘れたときの締め出しを
+- 却下: sudo のカード認証を既定で必須にする — カードを忘れたときの締め出しを
   避ける。ansible の `nekonolock_sudo_auth` でホストごとに有効化する。
 - 補足: PAM モジュールは libpam にリンクせず、実行時に `libpam.so.0` から
   `pam_get_item` を取る（ADR-0013 と同じ方針）。ビルドに PAM の開発用
   パッケージを要求しない。
-- 補足: 署名用の一時ディレクトリは root が `/run/user/<uid>` に作り、
-  所有者をユーザーへ移す。root が作った 0700 の `/tmp` 配下では、
-  `setuid` した gpg がチャレンジを読めないため。
-- 補足: 検証用の gpg 子プロセスは、fork 後に実 uid も 0 へ切り替える。
+- 補足: 署名と検証の gpg 子プロセスは、fork 後に実 uid も 0 へ切り替える。
   sudo の PAM は実 uid = 呼び出したユーザー、実効 uid = root で動くが、
   gpg は実 uid でファイルを開くため、root 所有の一時 keyring をそのままでは
-  読めない（`Permission denied` になる）。検証は root 所有の入力だけを扱う
-  子に限定する。
+  読めない（`Permission denied` になる）。root 所有の入力だけを扱う子に限定する。
 
-## ADR-0028: PIN キャッシュを署名前に消す
+## ADR-0028: PIN キャッシュを署名前に捨てる
 
-- 決定: OpenPGP で署名する前に、設定鍵の keygrip を求め、
-  `gpg-connect-agent "CLEAR_PASSPHRASE --mode=normal <keygrip>"` で
-  gpg-agent の PIN キャッシュを消す。ロック画面と sudo の両方で行う。
-- 理由: gpg-agent は一度成功した PIN をキャッシュし、その間は間違った PIN でも
-  署名を通す。PIN を第二要素として扱う以上、署名のたびにキャッシュを消す必要が
-  ある。
+- 決定: ロック画面の OpenPGP 署名では、署名の前に
+  `gpg-connect-agent "RELOADAGENT"` を送り、ユーザーの gpg-agent の PIN /
+  パスフレーズキャッシュを捨てる。sudo はユーザーの agent を使わず、root
+  管理の一時 agent でキャッシュ自体を無効にする（ADR-0035）。
+- 理由: gpg-agent は一度成功した PIN をキャッシュし、その間は
+  `--passphrase-fd` で渡した PIN を使わずに署名を通す。キャッシュは uid 単位で
+  pty や呼び出し元を区別しないため、1 回の解除で同じ uid の署名経路がすべて
+  フリーになる。PIN を第二要素として扱うには、署名のたびにキャッシュを捨てて、
+  渡した PIN をカードに検証させる必要がある。
+- 却下: `CLEAR_PASSPHRASE --mode=normal <keygrip>` だけにする — ソフトウェア鍵の
+  パスフレーズには効くが、OpenPGP カードの PIN は GnuPG 2.4 ではカードの
+  serial / keyref をキーにした PIN キャッシュに入る。keygrip を渡しても、
+  キャッシュが無いときと同じ `OK` が返るだけで、温まった PIN は消えない。
 - 却下: `gpg-agent.conf` の `ignore-cache-for-signing` に頼る — ユーザーが
   管理する設定であり、ヘルパや PAM モジュールから強制できない。
-- 範囲: この決定が塞ぐのは、`nekonolock` と `pam_nekonolock.so` の署名経路で
-  誤 PIN が通る問題だけ。ロック中に同じ uid のプロセスが直接署名する問題は
-  止めていない（ADR-0029）。
+- 副作用: ユーザーの gpg-agent のキャッシュをすべて捨てるため、同じ
+  エージェントを使う ssh / git のパスフレーズも次回の署名で聞き直しになる。
+  PIN の検証を優先する。
+- 範囲: この決定が塞ぐのは、ロック画面の署名経路で誤 PIN が通る問題だけ。
+  sudo は ADR-0035 でユーザーの agent を使わない。ロック中に同じ uid の
+  プロセスが直接署名する問題は止めていない（ADR-0029）。
 - 補足: `gpg-connect-agent` はエージェントが `ERR` を返しても終了コード 0 に
   なる。終了コードだけで成功と判断せず、標準出力に `OK` があり `ERR` が無い
   ことを確認できなければ署名しない。
@@ -383,11 +392,13 @@
 - 理由: ロック時に scdaemon を止めると、SSH / git 署名と競合して旧構成の
   待ちや失敗が戻る。カードアクセスを止めるには、署名経路とは別の仕組みが要る。
 - 残るリスク: ロック中にセッションへコード実行の足場を持つ攻撃者は、
-  キャッシュが温まっていれば PIN なしで署名できる。sudo の署名も同じ
-  ユーザーの gpg-agent に委ねるため、この経路からは止まらない。
+  キャッシュが温まっていれば PIN なしで署名できる。sudo は root 管理の
+  一時 agent に分離した（ADR-0035）が、ロック画面の署名は同じユーザーの
+  gpg-agent に委ねるため、この経路からは止まらない。
 - 選べる対応:
-  1. ロック開始時とロック中に `CLEAR_PASSPHRASE` を実行する。実装は小さいが、
-     署名自体は止まらない。SSH / git は都度 PIN を聞くことになる。
+  1. ロック開始時とロック中にエージェントのキャッシュを捨てる
+     （`RELOADAGENT`）。実装は小さいが、署名自体は止まらない。SSH / git は
+     都度 PIN を聞くことになる。
   2. ロック中だけ gpg-agent / scdaemon を止め、解除時に戻す。署名は止まるが、
      SSH / git / agent forwarding も止まる。既定 off の opt-in 向き。
   3. seat / session 単位でカードへのアクセスを落とす（udev、logind、pcscd の
@@ -450,3 +461,43 @@
   出すためだけに設定の読み手が増える。
 - 補足: hostname が読めない場合は描かない。`label` を明示すればマシン名より
   優先する。
+
+## ADR-0034: sudo の timestamp は tty 単位にする
+
+- 決定: ansible role で sudo のカード認証を有効にするとき、
+  `/etc/sudoers.d/nekonolock` に `Defaults timestamp_type=tty` を置く。
+  `nekonolock_sudo_timestamp_type` で変更でき、空にすると sudoers を触らない。
+- 理由: sudo の timestamp は PAM の外側で決まる。`global` や `ppid` だと、
+  1 つの pty で認証すると別の pty でも再認証なしに sudo でき、パスワード認証の
+  見え方と揃わない。PAM モジュールからは timestamp の種類を変えられないため、
+  sudoers で `tty` を明示する。
+- 却下: PAM モジュールで timestamp を操作する — sudo の内部ファイル形式に
+  依存し、壊れやすい。timestamp は sudo の設定で決める。
+- 却下: `timestamp_timeout=0` を既定にする — どのコマンドでも毎回認証になり、
+  per-pty の既定動作より厳しすぎる。必要ならホスト側で設定する。
+- 補足: `tty` でも同じ pty では `timestamp_timeout`（既定 5 分）の間は
+  再認証なしになる。パスワード認証と同じ挙動。
+
+## ADR-0035: sudo の署名は root 管理の一時 agent で行う
+
+- 決定: `pam_nekonolock.so` は root 専用の一時 homedir を作り、信頼した鍵を
+  取り込んで root の gpg-agent / scdaemon で署名する。`gpg-agent.conf` に
+  `ignore-cache-for-signing` と TTL 0 を書き、カードの PIN の VERIFY 状態は
+  `SCD PASSWD --clear 1` で署名前に落とす。ユーザーの gpg-agent は使わない。
+  カードを root の scdaemon が開けるよう、ユーザーの scdaemon は先に止める。
+- 理由: ユーザーの gpg-agent は同じ uid のプロセスが socket を差し替えられ、
+  `RELOADAGENT` を無視してキャッシュ済みの PIN で署名させられる。監査で、
+  agent を proxy に差し替えると間違った PIN でも `pam_authenticate` が成功する
+  ことを確認した。PIN を第二要素として扱うには、root 管理の card アクセスで
+  PIN を検証する必要がある。
+- 却下: `RELOADAGENT` でユーザーのキャッシュを消すだけ — 同じ uid が agent を
+  制御できるため、消したことを強制できない（ADR-0028 の旧案）。
+- 却下: ユーザーの scdaemon に VERIFY させる — 同じ uid が結果を偽装できる。
+- 代償: カードを root の scdaemon が開くため、ユーザーの scdaemon を止める。
+  同時に走っている ssh / git の署名は失敗するか、再試行が必要になる。
+  pcscd が動いているホストでは `disable-ccid` で pcscd を共有する。
+- 補足: 実カードでの `SCD PASSWD --clear 1` と scdaemon の解放は実機で確認する。
+  カードを開けない場合は `PAM_IGNORE` でパスワードへフォールバックする。
+- 補足: カードを持たない開発環境では、`/etc/nekonolock/sudo-key.asc` に
+  root 所有のソフトウェア秘密鍵を置けば同じ経路をテストできる。実カードの
+  ホストでは公開鍵を置く。

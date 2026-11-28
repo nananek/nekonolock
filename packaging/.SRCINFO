@@ -1,5 +1,5 @@
 pkgbase = nekonolock
-	pkgdesc = Sway screen locker unlocked by a YubiKey OpenPGP challenge or a password
+	pkgdesc = Sway screen locker unlocked by an OpenPGP card challenge or a password
 	pkgver = 0.3.4
 	pkgrel = 1
 	url = https://github.com/nananek/nekonolock
@@ -10,7 +10,7 @@ pkgbase = nekonolock
 	depends = libxkbcommon
 	depends = pam
 	depends = ttf-dejavu
-	optdepends = pcsclite: YubiKey を pcscd 経由で使う場合（scdaemon の disable-ccid）
+	optdepends = pcsclite: OpenPGP カードを pcscd 経由で使う場合（scdaemon の disable-ccid）
 	optdepends = ccid: PC/SC の CCID ドライバ
 	backup = etc/pam.d/nekonolock
 	source = nekonolock-0.3.4.tar.gz::https://github.com/nananek/nekonolock/archive/refs/tags/v0.3.4.tar.gz

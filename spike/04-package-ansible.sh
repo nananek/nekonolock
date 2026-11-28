@@ -58,7 +58,7 @@ COPY ca.crt /tmp/ca.crt
 RUN if [ -s /tmp/ca.crt ]; then cat /tmp/ca.crt >> /etc/ssl/certs/ca-certificates.crt; fi \
  && pacman -Syu --noconfirm \
  && pacman -S --noconfirm --needed \
-      base-devel cargo libxkbcommon wayland gnupg pam ttf-dejavu ansible \
+      base-devel cargo libxkbcommon wayland gnupg pam ttf-dejavu ansible sudo \
  && useradd -m builder
 EOF
 docker build -q -t local/nekonolock-pkg:latest -f "$work/Dockerfile" "$work"
@@ -132,7 +132,7 @@ fi
 check "systemd-analyze verify" "[ $verify_rc -eq 0 ]"
 
 # 2. ansible role。package はすでに入っているので、PAM と swayidle を確認する。
-cat >/root/sway-config <<'SWAY'
+cat >/tmp/nekonolock-sway-config <<'SWAY'
 set $mod Mod4
 exec swayidle -w timeout 300 'swaylock -f' timeout 600 'swaymsg "output * power off"' resume 'swaymsg "output * power on"' before-sleep 'swaylock -f'
 bindsym $mod+Escape exec swaylock
@@ -144,7 +144,7 @@ cat >/work/playbook.yml <<'PLAY'
   vars:
     nekonolock_user: root
     nekonolock_enable_user_socket: false
-    nekonolock_sway_config: /root/sway-config
+    nekonolock_sway_config: /tmp/nekonolock-sway-config
   roles:
     - nekonolock
 PLAY
@@ -158,11 +158,11 @@ else
     fail=1
 fi
 check "swayidle が nekonolock になった" \
-    "grep -q 'timeout 300 .nekonolock.' /root/sway-config"
+    "grep -q 'timeout 300 .nekonolock.' /tmp/nekonolock-sway-config"
 check "swayidle の before-sleep も nekonolock" \
-    "grep -q 'before-sleep .nekonolock.' /root/sway-config"
+    "grep -q 'before-sleep .nekonolock.' /tmp/nekonolock-sway-config"
 check "swayidle 以外の swaylock は残る" \
-    "grep -q 'bindsym .*exec swaylock' /root/sway-config"
+    "grep -q 'bindsym .*exec swaylock' /tmp/nekonolock-sway-config"
 check "PAM は ansible が管理" "grep -q 'Managed by ansible' /etc/pam.d/nekonolock"
 
 if ansible-playbook -i localhost, -c local /work/playbook.yml >/tmp/ansible2.log 2>&1; then
@@ -173,6 +173,59 @@ else
     fail=1
 fi
 check "role は冪等" "grep -q 'changed=0' /tmp/ansible2.log"
+
+# 3. sudo のカード認証を有効にしたときの sudoers drop-in。
+cat >/work/playbook-sudo.yml <<'PLAY'
+- hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    nekonolock_user: root
+    nekonolock_enable_user_socket: false
+    nekonolock_sway_config: /tmp/nekonolock-sway-config
+    nekonolock_sudo_auth: true
+    nekonolock_sudo_key: "030130E2F156CD74"
+    nekonolock_sudo_public_key: |
+      -----BEGIN PGP PUBLIC KEY BLOCK-----
+      dummy
+      -----END PGP PUBLIC KEY BLOCK-----
+    nekonolock_sudo_users: ["root"]
+  roles:
+    - nekonolock
+PLAY
+if ansible-playbook -i localhost, -c local /work/playbook-sudo.yml >/tmp/ansible-sudo.log 2>&1; then
+    note "ok: ansible-playbook (sudo auth)"
+else
+    note "FAIL: ansible-playbook (sudo auth)"
+    tail -60 /tmp/ansible-sudo.log
+    fail=1
+fi
+check "sudo PAM に sufficient を入れた" \
+    "grep -q '^auth sufficient pam_nekonolock.so' /etc/pam.d/sudo"
+check "sudoers の timestamp_type" \
+    "grep -qx 'Defaults timestamp_type=tty' /etc/sudoers.d/nekonolock"
+check "sudoers の構文" "visudo -cf /etc/sudoers.d/nekonolock >/dev/null 2>&1"
+
+if ansible-playbook -i localhost, -c local /work/playbook-sudo.yml >/tmp/ansible-sudo2.log 2>&1; then
+    note "ok: ansible-playbook (sudo auth, 2 回目)"
+else
+    note "FAIL: ansible-playbook (sudo auth, 2 回目)"
+    tail -60 /tmp/ansible-sudo2.log
+    fail=1
+fi
+check "sudo auth も冪等" "grep -q 'changed=0' /tmp/ansible-sudo2.log"
+
+# 4. 無効に戻すと、role が入れた行と drop-in だけを消す。
+if ansible-playbook -i localhost, -c local /work/playbook.yml >/tmp/ansible3.log 2>&1; then
+    note "ok: ansible-playbook (sudo auth を無効化)"
+else
+    note "FAIL: ansible-playbook (sudo auth を無効化)"
+    tail -60 /tmp/ansible3.log
+    fail=1
+fi
+check "sudo PAM の行を消した" \
+    "! grep -q '^auth sufficient pam_nekonolock.so' /etc/pam.d/sudo"
+check "sudoers の drop-in を消した" "[ ! -e /etc/sudoers.d/nekonolock ]"
 
 if [ "$fail" -ne 0 ]; then
     note "FAIL"

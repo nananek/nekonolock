@@ -42,7 +42,7 @@ makepkg --printsrcinfo > .SRCINFO
 ```
 
 依存は `gnupg` / `libxkbcommon` / `pam` / `ttf-dejavu`、ビルドに `rust`
-（`cargo` を含む）。YubiKey を pcscd 経由で使うホストでは `pcsclite` と
+（`cargo` を含む）。OpenPGP カードを pcscd 経由で使うホストでは `pcsclite` と
 `ccid` も入れる（`optdepends`）。
 
 `source` は v0.3.4 から GitHub release tag の archive を pin している。
@@ -129,7 +129,7 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 
 ## 実機で必要な設定
 
-- YubiKey: ロック画面と sudo は OpenPGP applet（scdaemon 経由）を使う。
+- カード: ロック画面と sudo は OpenPGP applet（scdaemon 経由）を使う。
   PIV (`pam_pkcs11`) は SDDM / login / TTY 用に残す。ロック画面の password は
   `system-auth` の `pam_pkcs11` を通さない（設計 §5.2 / §9）。
 - `[auth] key` は実際の鍵の long key ID か fingerprint にする。
@@ -140,20 +140,37 @@ swayidle の行を丸ごと置き換えるため、DPMS などの設定は
 
 `pam_nekonolock.so` は `/etc/pam.d/sudo` の `auth include system-auth` の
 直前に `auth sufficient pam_nekonolock.so` として入れる。カードが無い、
-PIN が違う、公開鍵が読めないなどの場合は `PAM_IGNORE` を返し、通常の
+PIN が違う、鍵が読めないなどの場合は `PAM_IGNORE` を返し、通常の
 パスワード認証へフォールバックする。
 
 sudo の timestamp（既定 5 分）は PAM の外側で効く。timestamp が有効な間は
-sudo が PAM を呼ばないため、YubiKey PIN は再要求されない。YubiKey 成功も
+sudo が PAM を呼ばないため、カードの PIN は再要求されない。カード成功も
 パスワード成功も同じ timestamp を更新する。毎回カードを要求するには
 sudoers で `Defaults timestamp_timeout=0` にする。ただし失敗時はパスワードへ
-フォールバックするため、これだけでは YubiKey 必須にはならない。
+フォールバックするため、これだけではカード必須にはならない。
+
+timestamp の種類は `tty` を前提にする。`global` や `ppid` だと、1 つの pty で
+認証すると別の pty でも再認証なしに sudo できる。role は sudo のカード認証を
+有効にするとき `/etc/sudoers.d/nekonolock` に `Defaults timestamp_type=tty` を
+置く。変更するときは `nekonolock_sudo_timestamp_type` を、role に触らせない
+ときは空にする。
+
+署名の前に `gpg-connect-agent "RELOADAGENT"` でキャッシュを捨てるのは
+ロック画面の署名です。sudo はユーザーの gpg-agent を使わず、root 専用の
+一時 homedir / gpg-agent（`ignore-cache-for-signing`、TTL 0）で署名します。
+ユーザーの scdaemon は先に止め、カードがあれば `SCD PASSWD --clear 1` で
+VERIFY 状態も落とします。カードを root 側で開けない場合はパスワードへ
+フォールバックします。pcscd が動いているホストでは scdaemon も pcscd 経由に
+します。実カードでの `PASSWD --clear` と scdaemon の解放は実機で確認して
+ください。
 
 設定は `/etc/nekonolock/sudo.toml`（root:root 0644）と、検証用の
 `/etc/nekonolock/sudo-key.asc`（ASCII armored、root 所有）。どちらも
 ユーザーの `~/.config/nekonolock/config.toml` とは独立している。
-モジュールはユーザーの `nekonolock-auth` socket を信頼しない。署名だけを
-実 uid の gpg-agent / scdaemon にさせ、検証は root 側の一時 keyring で行う。
+モジュールはユーザーの `nekonolock-auth` socket もユーザーの gpg-agent も
+信頼しない。root 側の一時 agent で署名し、検証も root 側の一時 keyring で行う。
+実カードでは `sudo-key.asc` に公開鍵を置く。カードを持たない開発環境では
+root 所有の秘密鍵を置けば同じ経路をテストできる。
 
 ansible role で有効にする場合:
 
@@ -163,9 +180,12 @@ nekonolock_sudo_key: "030130E2F156CD74"
 nekonolock_sudo_public_key: "{{ lookup('file', 'files/nekonolock-sudo-key.asc') }}"
 # 必要ならユーザーを限定する。空なら全ユーザー。
 nekonolock_sudo_users: ["nananek"]
+# tty / ppid / global。空なら sudoers を触らない。
+nekonolock_sudo_timestamp_type: tty
 ```
 
 role は `/etc/nekonolock/sudo.toml` と公開鍵を置き、`/etc/pam.d/sudo` に
-1 行だけ挿す。`nekonolock_sudo_auth: false` に戻すと、その 1 行を消す。
+1 行だけ挿し、`/etc/sudoers.d/nekonolock` に timestamp の既定値を置く。
+`nekonolock_sudo_auth: false` に戻すと、その行と drop-in を消す。
 公開鍵は `gpg --export --armor <key>` で用意する。`sudo` の PAM 設定を
 直接変えるため、role を適用する前に `/etc/pam.d/sudo` を確認する。

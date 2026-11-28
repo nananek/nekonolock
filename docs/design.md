@@ -5,10 +5,10 @@
 Sway セッションのスクリーンロックを、小さく検証しやすい構成で作り直す。
 要求は次の 4 点。
 
-1. YubiKey で解除できる（PIN 入力）。
-2. YubiKey が無いときはパスワードで解除できる。パスワードは設定で無効化できる。
+1. OpenPGP カード（YubiKey など）で解除できる（PIN 入力）。
+2. カードが無いときはパスワードで解除できる。パスワードは設定で無効化できる。
 3. カードアクセスの競合で挙動が不安定にならない。
-4. sudo でも同じ YubiKey を使える（任意）。
+4. sudo でも同じカードを使える（任意）。
 
 ## 2. 背景
 
@@ -54,12 +54,12 @@ Sway セッションのスクリーンロックを、小さく検証しやすい
 | - モード表示        |                           | - 失敗回数の管理      |
 +---------------------+                           +----------+-----------+
                                                              |
-                                        gpg-agent / scdaemon / pcscd
-                                        （カードを持つのはここだけ）
+                                  ユーザーの gpg-agent / scdaemon / pcscd
+                                  （sudo は root 側の一時 agent を使う）
 
-+---------------------+        fork + setuid         +----------------------+
-| sudo (PAM)          | ----------------------------> | gpg（実 uid）        |
-| pam_nekonolock.so   |                               | ユーザーの gpg-agent  |
++---------------------+     root 専用の一時 homedir   +----------------------+
+| sudo (PAM)          | ----------------------------> | gpg（root）           |
+| pam_nekonolock.so   |                               | root の gpg-agent     |
 | - root 所有の設定    |                               | scdaemon / カード     |
 | - root 側で署名検証  | <---------------------------- +----------------------+
 +---------------------+        署名（チャレンジ）
@@ -78,9 +78,14 @@ UI は認証ロジックを持たない。UI と認証を分ける理由は次�
 カード上の秘密鍵でチャレンジに署名し、対応する公開鍵で検証する。
 
 1. ヘルパが 32 byte のランダムチャレンジを作る。
-2. gpg-agent の該当鍵の PIN キャッシュを `CLEAR_PASSPHRASE` で消す。
-   gpg-agent は一度成功した PIN をキャッシュし、その間は間違った PIN でも
-   署名を通すため、署名のたびに消す。
+2. ロック画面の署名では、署名の前に `gpg-connect-agent "RELOADAGENT"` を送り、
+   ユーザーの gpg-agent の PIN キャッシュを捨てる。gpg-agent は一度成功した
+   PIN をキャッシュし、その間は間違った PIN でも署名を通す。カードの PIN は
+   カードの serial / keyref をキーにキャッシュされるため、keygrip 指定の
+   `CLEAR_PASSPHRASE` では消えない。`RELOADAGENT` は ssh / git の
+   パスフレーズも捨てるが、PIN の検証を優先する。
+   sudo はユーザーの agent を使わず、root 専用の一時 agent でキャッシュを
+   無効にする（ADR-0035）。
 3. `gpg --local-user <key>! --detach-sign --pinentry-mode loopback
    --passphrase-fd 0` に PIN とチャレンジを渡す。
    （`!` は primary を固定するため必須。付けないと署名 subkey に解決され、
@@ -89,9 +94,10 @@ UI は認証ロジックを持たない。UI と認証を分ける理由は次�
    `VALIDSIG` の fingerprint が設定鍵と一致し、`REVKEYSIG` / `KEYREVOKED` /
    `EXPKEYSIG` / `KEYEXPIRED` / `SIGEXPIRED` が無いことを確認する。
 
-ロック画面と sudo は OpenPGP applet（scdaemon 経由）を使う。PIV
-(`pam_pkcs11`) は SDDM / login / TTY 用に残すが、ロック画面の OpenPGP 経路とは
-PAM を分け、ロック画面の password は pam_pkcs11 を通さない。
+ロック画面は OpenPGP applet（ユーザーの scdaemon 経由）を使う。sudo も
+OpenPGP applet を使うが、署名は root 管理の一時 agent / scdaemon で行う
+（ADR-0035）。PIV (`pam_pkcs11`) は SDDM / login / TTY 用に残すが、ロック画面の
+OpenPGP 経路とは PAM を分け、ロック画面の password は pam_pkcs11 を通さない。
 
 PIN の入力は `--pinentry-mode loopback` でヘルパが渡す。カード側の PIN
 リトライ回数（3 回）を消費するのは「PIN モードとして送った入力」だけにする。
@@ -122,7 +128,7 @@ faillock とアカウントの期限切れを確認する。
 
 - 画面上端にモード色の細い accent line を引く。
 - 日付の下にモード capsule（丸い pill）を出す。モード色のドットと
-  `YUBIKEY PIN` / `PASSWORD` のラベルを置く。
+  `CARD PIN` / `PASSWORD` のラベルを置く。
 - 入力欄の枠と入力ドットもモード色にする。
 - 色だけに頼らない（ラベル・ドット・枠の 3 点で区別できる）。
 - 画面のコピー（左上ラベル、モード名、案内、状態メッセージ、日付、
@@ -146,7 +152,7 @@ package は `ttf-dejavu` を依存に入れる。
   ヘルパは socket activation で再起動させる。
 - ヘルパは要求の読み取りに `timeout_sec` を使う。時間内に要求が来なければ
   応答せず接続を閉じる（UI は接続失敗として扱う）。
-- カードが抜けた場合は `YUBIKEY NOT FOUND` を表示し、`password` が有効なら
+- カードが抜けた場合は `CARD NOT FOUND` を表示し、`password` が有効なら
   パスワードモードへ切り替える。切り替え時は入力中の秘密を破棄し、自動送信しない。
   カードを挿し直しても PIN モードには戻さない。
 - ロック開始時に `status` を問い合わせ、以降もカードがある間は 1 秒、無いと
@@ -155,7 +161,7 @@ package は `ttf-dejavu` を依存に入れる。
   応答が来るまではパスワードを既定にする（カードのリトライを消費しないため）。
   カードがあり `pin` が有効なら、最初の応答で PIN モードへ切り替える。
 - 状態メッセージは既定フォントで描ける英語にする（`AUTH FAILED (1/5)`、
-  `WAIT 5s`、`YUBIKEY ERROR`、`PAM ERROR` など）。
+  `WAIT 5s`、`CARD ERROR`、`PAM ERROR` など）。
 - `[ui] max_attempts` は連打抑止。認証失敗の直後に 1 秒、連続失敗が上限に
   達したら 5 秒のクールダウンを入れる。`0` で無効。恒久的な拒否はしない
   （正規の解除手段を塞がないため。[ADR-0017](decisions.md)）。
@@ -164,7 +170,7 @@ package は `ttf-dejavu` を依存に入れる。
 
 ### 5.5 sudo（任意）
 
-sudo の YubiKey 認証は `pam_nekonolock.so` で行う。ロック画面の
+sudo の OpenPGP カード認証は `pam_nekonolock.so` で行う。ロック画面の
 `nekonolock-auth` socket には接続しない。UI 用ヘルパはユーザーが起動・
 差し替えできるため、それを root への認証に使うと、同じ uid の攻撃者が
 偽のヘルパで sudo を通せてしまう。共有するのは `crates/gpg` の
@@ -174,30 +180,38 @@ sudo の YubiKey 認証は `pam_nekonolock.so` で行う。ロック画面の
 2. モジュールは root 所有の `/etc/nekonolock/sudo.toml` と
    `/etc/nekonolock/sudo-key.asc` を読む。ユーザーの
    `~/.config/nekonolock/config.toml` は読まない。
-3. `/run/user/<uid>` と home の所有者・モードを確認し、子プロセスの
-   `gpg` を実 uid / gid に落として署名させる。PIN は PAM の会話
-   （エコーなし）で受け取り、gpg の stdin に渡す。
-4. 署名の検証は root 側で行う。一時 keyring に信頼した公開鍵だけを
-   取り込み、`VALIDSIG` の fingerprint と失効・期限切れを確認する。
-   PAM は実 uid = ユーザー、実効 uid = root で動くため、gpg が実 uid で
-   ファイルを開くことに注意し、検証用の子プロセスは fork 後に実 uid も
-   root へ切り替える。
+3. root 専用の一時 homedir に信頼した鍵を取り込み、`gpg-agent.conf` に
+   `ignore-cache-for-signing` と TTL 0、pcscd があれば `scdaemon.conf` に
+   `disable-ccid` を書く。ユーザーの scdaemon を止めてカードを解放し、
+   root の scdaemon でカードを開く。カードがあれば
+   `SCD PASSWD --clear 1` で VERIFY 状態を落とす。PIN は PAM の会話
+   （エコーなし）で受け取り、root の gpg の stdin に渡す。
+4. 署名は root の一時 agent、検証は root の別の一時 keyring で行う。
+   一時 keyring には信頼した鍵だけを取り込み、`VALIDSIG` の fingerprint と
+   失効・期限切れを確認する。ユーザーの gpg-agent / scdaemon の応答は
+   PIN の判定に使わない。カードを開けない場合はパスワードへフォールバックする。
 5. 成功なら `PAM_SUCCESS`。カードが無い・PIN が違う・設定や鍵が読めない
    場合は `PAM_IGNORE` を返す。PAM スタックは `auth sufficient
    pam_nekonolock.so` を `auth include system-auth` の直前に置くので、
    パスワード認証へフォールバックする。
 
 PIN の誤りはカード側のリトライ回数（3 回）だけを消費し、sudo の
-`pam_faillock` には数えない。YubiKey を必須にしたいホストは、PAM の
+`pam_faillock` には数えない。カードを必須にしたいホストは、PAM の
 `sufficient` を `required` に変えるのではなく、まずこの既定動作
 （パスワードへのフォールバック）を理解してから別途検討する。
 
 sudo の timestamp（既定 5 分）は PAM モジュールの外側で効く。timestamp が
-有効な間は sudo が PAM を呼ばないため、YubiKey PIN も再要求されない。
-YubiKey 成功もパスワード成功も同じ timestamp を更新する。毎回カードを要求する
+有効な間は sudo が PAM を呼ばないため、カードの PIN も再要求されない。
+カード成功もパスワード成功も同じ timestamp を更新する。毎回カードを要求する
 には sudoers で `Defaults timestamp_timeout=0` にする必要がある。ただし現状は
 失敗時に `PAM_IGNORE` でパスワードへフォールバックするため、これだけでは
-YubiKey 必須にはならない。
+カード必須にはならない。
+
+timestamp の種類は `tty` を前提にする。`global` や `ppid` だと、1 つの pty で
+認証すると別の pty でも再認証なしに sudo できる。PAM モジュールからは
+timestamp の種類を変えられないため、ansible role は sudo のカード認証を
+有効にするとき `/etc/sudoers.d/nekonolock` に `Defaults timestamp_type=tty` を
+置く（ADR-0034）。
 
 ## 6. プロトコル
 
@@ -277,7 +291,7 @@ password_accent = "#A34A3A"
 ```
 
 - 既定は `openpgp = true` / `password = true`。
-- `password = false` で YubiKey 必須運用にできる。
+- `password = false` でカード必須運用にできる。
 - `openpgp = false` でパスワードのみにもできる。
 - 両方 `false` は起動時に拒否する。
 - `clock_format` / `date_format` は空でなく `chrono` が解釈できることを
@@ -297,8 +311,9 @@ password_accent = "#A34A3A"
 ### 7.1 sudo 用の設定
 
 sudo 用の PAM モジュールは、ユーザーの設定ではなく root 所有の
-`/etc/nekonolock/sudo.toml` を読む。検証用の公開鍵は
-`/etc/nekonolock/sudo-key.asc`（ASCII armored）に置く。
+`/etc/nekonolock/sudo.toml` を読む。信頼した鍵は
+`/etc/nekonolock/sudo-key.asc`（ASCII armored）に置く。実カードでは公開鍵、
+カードを持たない開発環境では root 所有の秘密鍵を使う。
 
 ```toml
 [sudo]
@@ -383,9 +398,11 @@ users = []          # 空なら全ユーザー
 - パスワードは PAM の `pam_faillock` に委ねる。
 - PIN の試行はカード側のリトライ回数が上限。UI の `max_attempts` は
   連打を抑えるだけで、PIN の自動再試行はしない。
-- 署名の前に gpg-agent の PIN キャッシュを消す。キャッシュが温まっていると
-  間違った PIN でも署名が通り、PIN を第二要素として扱えなくなる。
-  `gpg-connect-agent` の `ERR` は終了コード 0 でも失敗として扱う。
+- ロック画面の署名の前に gpg-agent の PIN キャッシュを消す。キャッシュが
+  温まっていると間違った PIN でも署名が通り、PIN を第二要素として扱えなく
+  なる。`gpg-connect-agent` の `ERR` は終了コード 0 でも失敗として扱う。
+  sudo はユーザーの agent を使わず、root 専用の一時 agent でキャッシュを
+  無効にする（[ADR-0035](decisions.md)）。
 - **画面ロックは同一 uid のプロセスに対するカードアクセスの境界ではない
   （未対応）。** ロック中もユーザーの gpg-agent / scdaemon は動き続け、同じ
   uid のプロセスはカード署名を要求できる。ロック中に署名を止めるには、
@@ -396,17 +413,18 @@ users = []          # 空なら全ユーザー
   知らずに署名できるため、検証側で止める（[ADR-0016](decisions.md)）。
 - 認証成功後は、UI が lock surface を破棄して終了する。
 - ヘルパは認証結果以外を返さない（カードの詳細情報や PIN 残回数を返さない）。
-- sudo 用 PAM モジュールはユーザーの `nekonolock-auth` socket を信頼しない。
-  ユーザーが差し替えられるプロセスの応答を root の認証に使うと、同じ uid の
-  攻撃者が偽のヘルパで sudo を通せてしまう。
-- sudo 用の署名は実 uid の gpg-agent にさせるが、検証は root 側の一時
-  keyring に取り込んだ root 所有の公開鍵だけで行う。`gpg` は絶対パス
+- sudo 用 PAM モジュールはユーザーの `nekonolock-auth` socket もユーザーの
+  gpg-agent も信頼しない。ユーザーが差し替えられるプロセスの応答を root の
+  認証に使うと、同じ uid の攻撃者が偽のヘルパや agent で sudo を通せてしまう。
+- sudo 用の署名は root 専用の一時 homedir と gpg-agent / scdaemon で行い、
+  検証は root 側の別の一時 keyring に取り込んだ root 所有の信頼した鍵だけで
+  行う。ユーザーの scdaemon はカードを開けるよう先に止める。`gpg` は絶対パス
   （`/usr/bin/gpg`）で起動し、環境変数は必要なものだけを設定する。
-- sudo 用の署名で root がユーザー所有の runtime dir に一時ファイルを作る
-  場合、そのパスを信頼しない。challenge / signature はディレクトリの fd を
-  基準に `O_EXCL` / `O_NOFOLLOW` で作り、gpg には `/proc/self/fd` で渡す。
-  署名も開いた fd から読む。
-- sudo 用の設定と公開鍵は root 所有で、group / other から書き換えられない
+- sudo 用の一時 homedir / challenge / signature は、ユーザーが親を書き換え
+  られない `/run` に作る。challenge / signature はディレクトリの fd を基準に
+  `O_EXCL` / `O_NOFOLLOW` で作り、gpg には `/proc/self/fd` で渡す。署名も
+  開いた fd から読む。
+- sudo 用の設定と信頼した鍵は root 所有で、group / other から書き換えられない
   ことをモジュールが確認する。symlink は辿らず、開いた fd のメタデータを見る。
 
 ## 11. テスト方針
@@ -424,8 +442,8 @@ users = []          # 空なら全ユーザー
 - E2E: Sway 1.12 の headless 出力（pixman）で、2 出力のロック、
   出力追加・削除、誤 PIN 後の維持、正しい PIN / パスワードでの解除を確認する。
 - E2E: 実機で手動チェックリスト。
-  - YubiKey 挿入 → PIN で解除
-  - YubiKey 抜去 → パスワードで解除
+  - カード挿入 → PIN で解除
+  - カード抜去 → パスワードで解除
   - パスワード無効設定で PIN のみ
   - 誤 PIN 2 回 → 正しい PIN で解除できる（リトライを消費しない経路の確認）
   - ロック中に SSH 署名を走らせても解除できる（scdaemon 競合の回帰確認）
@@ -452,7 +470,7 @@ packaging/     # PKGBUILD と ansible role のステージング
   `/usr/lib/systemd/user/`）、`/usr/lib/security/pam_nekonolock.so`、
   sudo 用設定の例、LICENSE を同梱する。
   依存は `gnupg` / `libxkbcommon` / `pam` / `ttf-dejavu`（既定フォント）。
-  YubiKey を pcscd 経由で使うホスト向けに `pcsclite` / `ccid` を
+  OpenPGP カードを pcscd 経由で使うホスト向けに `pcsclite` / `ccid` を
   optdepends に置く。
 - socket unit は `ListenSequentialPacket=` を使う。`ListenStream=` は
   `SOCK_STREAM` を作り、ヘルパの種別検証で起動できない（[ADR-0019](decisions.md)）。

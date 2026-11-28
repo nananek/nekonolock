@@ -24,7 +24,7 @@ nekonolock_swayidle_command: >-
   resume 'swaymsg "output * power on"'
   before-sleep 'nekonolock'
 
-# sudo 用の YubiKey 認証。既定は無効で、ロック画面だけを使う
+# sudo 用の OpenPGP カード認証。既定は無効で、ロック画面だけを使う
 # ホストの PAM 設定を変えない。有効にする場合は key と公開鍵を渡す。
 nekonolock_sudo_auth: false
 nekonolock_sudo_key: ""
@@ -39,3 +39,7 @@ nekonolock_sudo_users: []
 # pam_nekonolock が PAM_IGNORE を返すので、パスワード認証へ進む。
 nekonolock_sudo_pam_service: sudo
 nekonolock_sudo_pam_include: system-auth
+# sudo の timestamp を tty 単位にする。global / ppid だと、1 つの pty で
+# 認証すると別の pty でも再認証なしに sudo でき、パスワード認証の見え方と
+# 揃わない。空にすると role は sudoers を触らない。
+nekonolock_sudo_timestamp_type: tty

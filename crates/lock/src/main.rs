@@ -5,7 +5,7 @@
 //!
 //! - 上端の accent line
 //! - 左上ラベル、右上 `LOCKED`、時計、日付
-//! - モード capsule（`YUBIKEY PIN` / `PASSWORD`）、入力欄、状態メッセージ
+//! - モード capsule（`CARD PIN` / `PASSWORD`）、入力欄、状態メッセージ
 //!
 //! 認証が成功するまで `SessionLock::unlock` を呼ばない（fail closed）。
 //!

@@ -23,7 +23,7 @@ pub struct SudoFile {
     pub sudo: SudoConfig,
 }
 
-/// sudo の YubiKey 認証。
+/// sudo の OpenPGP カード認証。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SudoConfig {
