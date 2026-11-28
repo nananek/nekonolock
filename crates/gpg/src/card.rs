@@ -488,7 +488,9 @@ fn inherit_fd(command: &mut Command, file: &fs::File, target: RawFd) {
 
 impl CardSigner for GpgCard {
     fn present(&self) -> bool {
-        self.card_present() || self.secret_key_available()
+        // 鍵リングの shadowed stub はカードを抜いても残る。secret_key_available
+        // まで見ると、カードが無いのに「あり」と誤認する。
+        self.card_present()
     }
 
     fn sign(&self, challenge: &[u8], pin: &str) -> Result<Vec<u8>, CardError> {
@@ -944,6 +946,36 @@ exit 0
 
         let log = fs::read_to_string(dir.path().join("agent.log")).unwrap();
         assert!(log.contains("RELOADAGENT"), "unexpected agent args: {log}");
+    }
+
+    #[test]
+    fn present_does_not_treat_a_keyring_stub_as_a_card() {
+        let dir = tempfile::Builder::new()
+            .prefix("nekonolock-gpg-test-")
+            .tempdir()
+            .unwrap();
+        let gpg = dir.path().join("gpg");
+        // カードは無いが、鍵リングにはカードの shadowed stub が残っている。
+        fs::write(
+            &gpg,
+            "#!/bin/sh\n\
+case \" $* \" in\n\
+  *\" --card-status \"*) exit 2 ;;\n\
+  *\" --list-secret-keys \"*)\n\
+    echo 'sec:u:255:22:AAAAAAAAAAAAAAAA:1:1::u:::scSC:::#::ed25519:::0:'\n\
+    echo 'fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:'\n\
+    exit 0 ;;\n\
+esac\n\
+exit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&gpg, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let card = GpgCard::new("A".repeat(40), Duration::from_secs(5)).with_program(&gpg);
+        assert!(
+            !card.present(),
+            "カードの無い stub を present と数えてはいけない"
+        );
     }
 
     #[test]
