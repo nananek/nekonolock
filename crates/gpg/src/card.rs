@@ -72,6 +72,7 @@ pub struct GpgCard {
     no_options: bool,
     scrub_env: bool,
     full_root: bool,
+    flush_agent: bool,
 }
 
 impl GpgCard {
@@ -85,6 +86,7 @@ impl GpgCard {
             no_options: false,
             scrub_env: false,
             full_root: false,
+            flush_agent: true,
         }
     }
 
@@ -126,6 +128,16 @@ impl GpgCard {
     /// 検証用の信頼した鍵だけを扱う子に限定して使う。
     pub fn with_full_root(mut self, full_root: bool) -> Self {
         self.full_root = full_root;
+        self
+    }
+
+    /// 署名の前に gpg-agent のキャッシュを捨てるか。
+    ///
+    /// ユーザーの agent を使うロック画面の署名では true にする。root 専用の
+    /// 一時 homedir / agent を使う sudo の署名では、agent 側の設定で
+    /// `ignore-cache-for-signing` と TTL 0 を強制するため false にする。
+    pub fn with_flush_agent(mut self, flush: bool) -> Self {
+        self.flush_agent = flush;
         self
     }
 
@@ -178,16 +190,19 @@ impl GpgCard {
 
     /// 署名用の一時ディレクトリを作る。
     ///
-    /// 子プロセスを別ユーザーに落とす場合、root が作った 0700 の `/tmp` 配下
-    /// にはそのユーザーが入れない。そこでユーザーの runtime dir の中に作る。
-    /// ただし runtime dir はユーザー所有なので、このディレクトリは作成後に
-    /// rename / symlink へ差し替えられる。パスを信頼せず、ファイル操作は
-    /// 開いた fd だけを基準にする。
+    /// 子プロセスを別ユーザーに落とす場合は、ユーザーの runtime dir の中に作る。
+    /// runtime dir はユーザー所有なので、このディレクトリは作成後に rename /
+    /// symlink へ差し替えられる。パスを信頼せず、ファイル操作は開いた fd だけを
+    /// 基準にする。root 専用の署名（`full_root`）は、ユーザーが親を書き換え
+    /// られない `/run` に作る。
     fn private_tempdir(&self, prefix: &str) -> Result<tempfile::TempDir, CardError> {
         match &self.identity {
             Some(identity) => Ok(tempfile::Builder::new()
                 .prefix(prefix)
                 .tempdir_in(&identity.runtime_dir)?),
+            None if self.full_root => {
+                Ok(tempfile::Builder::new().prefix(prefix).tempdir_in("/run")?)
+            }
             None => Ok(tempfile::Builder::new().prefix(prefix).tempdir()?),
         }
     }
@@ -233,18 +248,26 @@ impl GpgCard {
         })
     }
 
-    /// 設定鍵の keygrip を公開鍵から求める。
-    fn keygrips(&self) -> Result<Vec<String>, CardError> {
-        let mut command = self.command();
-        command
-            .args([
-                "--batch",
-                "--no-tty",
-                "--with-colons",
-                "--with-keygrip",
-                "--list-keys",
-            ])
-            .arg(&self.key);
+    /// gpg-agent の PIN / パスフレーズキャッシュを署名前に捨てる。
+    ///
+    /// gpg-agent は一度成功した PIN をキャッシュし、キャッシュが温まっている間は
+    /// `--passphrase-fd` で渡した PIN を使わずに署名を通す。キャッシュは uid
+    /// 単位で、pty や呼び出し元を区別しない。そのため 1 回の解除で、同じ uid の
+    /// すべての署名経路がフリーになる。
+    ///
+    /// `CLEAR_PASSPHRASE <keygrip>` はソフトウェア鍵のパスフレーズには効くが、
+    /// OpenPGP カードの PIN は GnuPG 2.4 ではカードの serial / keyref をキーに
+    /// した PIN キャッシュに入る。keygrip を渡しても、キャッシュが無いときと
+    /// 同じ `OK` が返るだけで、温まった PIN は消えない。
+    /// `RELOADAGENT` は SIGHUP と同じくエージェントのキャッシュをすべて捨てる。
+    ///
+    /// 副作用として、同じエージェントを使う ssh / git のパスフレーズも次回の
+    /// 署名で聞き直しになる。PIN を第二要素として扱うため、キャッシュに頼らず
+    /// 毎回カードへ PIN を提示する方を優先する。
+    fn flush_agent_cache(&self) -> Result<(), CardError> {
+        let program = self.program.with_file_name("gpg-connect-agent");
+        let mut command = self.base_command(&program);
+        command.arg("RELOADAGENT").arg("/bye");
 
         let output = match run_command(command, None, self.timeout) {
             Ok(output) => output,
@@ -254,54 +277,107 @@ impl GpgCard {
         if !output.status.success() {
             return Err(CardError::Unavailable(last_line_or(
                 &output.stderr,
-                "gpg が鍵を列挙できなかった",
+                "gpg-agent のキャッシュを捨てられなかった",
             )));
         }
-
-        let grips = parse_keygrips(&String::from_utf8_lossy(&output.stdout));
-        if grips.is_empty() {
+        // gpg-connect-agent はエージェントが ERR を返しても終了コード 0 に
+        // なる。OK が無い、または ERR があれば署名へ進まない。
+        if !agent_command_succeeded(&output.stdout) {
             return Err(CardError::Unavailable(
-                "設定鍵の keygrip を取得できない".to_string(),
+                "gpg-agent が RELOADAGENT を拒否した".to_string(),
             ));
         }
-        Ok(grips)
+        Ok(())
     }
 
-    /// gpg-agent のパスフレーズキャッシュを署名前に消す。
+    /// 設定鍵に対応するカードが見つかり、鍵が一致するか。
     ///
-    /// gpg-agent は一度成功した PIN をキャッシュし、キャッシュが温まっている間は
-    /// 間違った PIN でも署名を通す。PIN を第二要素として扱うため、署名のたびに
-    /// 対象鍵のキャッシュを無効化する。
-    fn clear_cached_passphrase(&self) -> Result<(), CardError> {
-        let program = self.program.with_file_name("gpg-connect-agent");
-        for grip in self.keygrips()? {
-            let mut command = self.base_command(&program);
-            command
-                .arg("--no-history")
-                .arg(format!("CLEAR_PASSPHRASE --mode=normal {grip}"))
-                .arg("/bye");
+    /// root 専用の homedir では、カードの鍵 stub を作る役目も兼ねる。
+    pub fn card_present(&self) -> bool {
+        let mut command = self.command();
+        command.args(["--batch", "--no-tty", "--card-status"]);
 
-            let output = match run_command(command, None, self.timeout) {
-                Ok(output) => output,
-                Err(RunError::Timeout) => return Err(CardError::Timeout),
-                Err(RunError::Io(err)) => return Err(CardError::Unavailable(err.to_string())),
-            };
-            if !output.status.success() {
-                return Err(CardError::Unavailable(last_line_or(
-                    &output.stderr,
-                    "gpg-agent のキャッシュを消せなかった",
-                )));
+        match run_command(command, None, self.timeout.min(Duration::from_secs(10))) {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                !self.key.is_empty() && key_matches(&text, &self.key)
             }
-            // gpg-connect-agent はエージェントが ERR を返しても終了コード 0 に
-            // なる。終了コードだけを見ると、キャッシュが残ったまま署名へ進み、
-            // 温まったキャッシュの PIN で解除できてしまう。
-            if !agent_command_succeeded(&output.stdout) {
-                return Err(CardError::Unavailable(
-                    "gpg-agent が CLEAR_PASSPHRASE を拒否した".to_string(),
-                ));
+            _ => false,
+        }
+    }
+
+    /// 設定鍵の秘密鍵（カードの stub かソフトウェア鍵）が homedir にあるか。
+    pub fn secret_key_available(&self) -> bool {
+        let mut command = self.command();
+        command
+            .args(["--batch", "--no-tty", "--with-colons", "--list-secret-keys"])
+            .arg(&self.key);
+
+        match run_command(command, None, self.timeout.min(Duration::from_secs(10))) {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let has_secret = text
+                    .lines()
+                    .any(|line| line.starts_with("sec:") || line.starts_with("ssb:"));
+                has_secret && key_matches(&text, &self.key)
             }
+            _ => false,
+        }
+    }
+
+    /// カードの PIN の VERIFY 状態を落とし、次の署名で PIN を必須にする。
+    ///
+    /// gpg-agent のキャッシュではなくカード側の状態を消す。root 専用の
+    /// agent / scdaemon から実行する。失敗したら署名へ進めない。
+    pub fn clear_card_pin_state(&self) -> Result<(), CardError> {
+        let program = self.program.with_file_name("gpg-connect-agent");
+        let mut command = self.base_command(&program);
+        if let Some(homedir) = &self.homedir {
+            command.arg("--homedir").arg(homedir);
+        }
+        command.arg("SCD PASSWD --clear 1").arg("/bye");
+
+        let output = match run_command(command, None, self.timeout) {
+            Ok(output) => output,
+            Err(RunError::Timeout) => return Err(CardError::Timeout),
+            Err(RunError::Io(err)) => return Err(CardError::Unavailable(err.to_string())),
+        };
+        if !output.status.success() {
+            return Err(CardError::Unavailable(last_line_or(
+                &output.stderr,
+                "カードの PIN 状態を戻せなかった",
+            )));
+        }
+        if !agent_command_succeeded(&output.stdout) {
+            return Err(CardError::Unavailable(
+                "カードが PASSWD --clear を拒否した".to_string(),
+            ));
         }
         Ok(())
+    }
+
+    /// sudo 用の一時 agent を止める。失敗しても認証結果は変えない。
+    pub fn kill_agent(&self) {
+        let program = self.program.with_file_name("gpg-connect-agent");
+        let mut command = self.base_command(&program);
+        command.arg("--no-autostart");
+        if let Some(homedir) = &self.homedir {
+            command.arg("--homedir").arg(homedir);
+        }
+        command.arg("KILLAGENT").arg("/bye");
+        let _ = run_command(command, None, self.timeout.min(Duration::from_secs(5)));
+    }
+
+    /// ユーザーの scdaemon を止めてカードを解放する。
+    ///
+    /// root の agent がカードを掴む前に呼ぶ。エージェントやカードが無い場合は
+    /// 失敗するが、呼び出し側は無視してよい。認証の可否は root 側の署名で決まる。
+    pub fn kill_scdaemon(&self) {
+        let program = self.program.with_file_name("gpg-connect-agent");
+        let mut command = self.base_command(&program);
+        command.arg("--no-autostart");
+        command.arg("SCD KILLSCD").arg("/bye");
+        let _ = run_command(command, None, self.timeout.min(Duration::from_secs(5)));
     }
 
     /// 公開鍵のバイト列を `homedir` に取り込む。
@@ -412,20 +488,13 @@ fn inherit_fd(command: &mut Command, file: &fs::File, target: RawFd) {
 
 impl CardSigner for GpgCard {
     fn present(&self) -> bool {
-        let mut command = self.command();
-        command.args(["--batch", "--no-tty", "--card-status"]);
-
-        match run_command(command, None, self.timeout.min(Duration::from_secs(10))) {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                !self.key.is_empty() && key_matches(&text, &self.key)
-            }
-            _ => false,
-        }
+        self.card_present() || self.secret_key_available()
     }
 
     fn sign(&self, challenge: &[u8], pin: &str) -> Result<Vec<u8>, CardError> {
-        self.clear_cached_passphrase()?;
+        if self.flush_agent {
+            self.flush_agent_cache()?;
+        }
 
         let dir = self.private_tempdir("nekonolock-sign-")?;
         let files = self.prepare_sign_files(challenge, &dir)?;
@@ -531,18 +600,6 @@ fn agent_command_succeeded(stdout: &[u8]) -> bool {
         }
     }
     saw_ok
-}
-
-/// `gpg --with-colons --with-keygrip --list-keys` の出力から keygrip を取り出す。
-fn parse_keygrips(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .filter_map(|line| line.strip_prefix("grp:"))
-        .filter_map(|rest| rest.split(':').nth(8))
-        .map(str::trim)
-        .filter(|grip| !grip.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 /// `gpg --card-status` の出力や VALIDSIG の fingerprint と設定鍵を比べる。
@@ -845,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn sign_reads_the_signature_from_the_open_descriptor() {
+    fn sign_flushes_the_agent_cache_before_signing() {
         let dir = tempfile::Builder::new()
             .prefix("nekonolock-gpg-test-")
             .tempdir()
@@ -857,10 +914,6 @@ mod tests {
             "\
 #!/bin/sh
 case \" $* \" in
-  *\" --list-keys \"*)
-    echo 'grp:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-    exit 0
-    ;;
   *\" --detach-sign \"*)
     prev=\"\"
     out=\"\"
@@ -876,32 +929,48 @@ exit 0
 ",
         )
         .unwrap();
-        fs::write(&agent, "#!/bin/sh\necho OK\nexit 0\n").unwrap();
+        // 呼ばれた引数を残し、モジュールが RELOADAGENT を送ったことを確認する。
+        fs::write(
+            &agent,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$(dirname \"$0\")/agent.log\"\necho OK\nexit 0\n",
+        )
+        .unwrap();
         fs::set_permissions(&gpg, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
 
         let card = GpgCard::new("A".repeat(40), Duration::from_secs(5)).with_program(&gpg);
         let signature = card.sign(b"challenge", "123456").unwrap();
         assert_eq!(signature, b"signature");
+
+        let log = fs::read_to_string(dir.path().join("agent.log")).unwrap();
+        assert!(log.contains("RELOADAGENT"), "unexpected agent args: {log}");
     }
 
     #[test]
-    fn parses_keygrips_from_colons_output() {
-        let output = "\
-pub:-:255:22:8169485A377499E4:1794735933:1794822333::-:::scSC:::::ed25519:::0:
-fpr:::::::::E03DF3B6B0F8777456708F568169485A377499E4:
-grp:::::::::9195E7B9B80CA0AD04F0859DD4C7F932E9AD3464:
-sub:-:255:22:1111111111111111:1794735933:1794822333:::::s:::::ed25519:::0:
-fpr:::::::::AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:
-grp:::::::::BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB:
-";
-        assert_eq!(
-            parse_keygrips(output),
-            [
-                "9195E7B9B80CA0AD04F0859DD4C7F932E9AD3464",
-                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-            ]
+    fn sign_fails_when_the_agent_cache_cannot_be_flushed() {
+        let dir = tempfile::Builder::new()
+            .prefix("nekonolock-gpg-test-")
+            .tempdir()
+            .unwrap();
+        let gpg = dir.path().join("gpg");
+        let agent = dir.path().join("gpg-connect-agent");
+        let marker = dir.path().join("signed");
+        // 署名まで進んだら分かるようにする。
+        fs::write(
+            &gpg,
+            format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.to_string_lossy()),
+        )
+        .unwrap();
+        fs::write(&agent, "#!/bin/sh\necho 'ERR 1 rejected'\nexit 0\n").unwrap();
+        fs::set_permissions(&gpg, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let card = GpgCard::new("A".repeat(40), Duration::from_secs(5)).with_program(&gpg);
+        let err = card.sign(b"challenge", "123456").unwrap_err();
+        assert!(
+            matches!(err, CardError::Unavailable(_)),
+            "unexpected: {err:?}"
         );
-        assert!(parse_keygrips("pub:-:255:22:ABCD::::\n").is_empty());
+        assert!(!marker.exists(), "署名へ進んではいけない");
     }
 }

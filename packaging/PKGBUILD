@@ -11,7 +11,7 @@
 pkgname=nekonolock
 pkgver=0.3.4
 pkgrel=1
-pkgdesc="Sway screen locker unlocked by a YubiKey OpenPGP challenge or a password"
+pkgdesc="Sway screen locker unlocked by an OpenPGP card challenge or a password"
 arch=('x86_64')
 url="https://github.com/nananek/nekonolock"
 license=('MIT')
@@ -23,7 +23,7 @@ depends=(
 )
 makedepends=('rust')  # cargo を含む
 optdepends=(
-    'pcsclite: YubiKey を pcscd 経由で使う場合（scdaemon の disable-ccid）'
+    'pcsclite: OpenPGP カードを pcscd 経由で使う場合（scdaemon の disable-ccid）'
     'ccid: PC/SC の CCID ドライバ'
 )
 backup=('etc/pam.d/nekonolock')

@@ -1,6 +1,6 @@
 [package]
 name = "pam-nekonolock"
-description = "sudo 用の PAM モジュール（YubiKey OpenPGP）"
+description = "sudo 用の PAM モジュール（OpenPGP カード）"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

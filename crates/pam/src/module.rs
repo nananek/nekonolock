@@ -1,8 +1,8 @@
 //! `pam_sm_authenticate` の実装。
 //!
 //! 1. `/etc/nekonolock/sudo.toml`（root 所有）を読む。
-//! 2. 実 uid のユーザーとしてカードの有無を確認する。
-//! 3. PIN を PAM の会話で聞き、ユーザーの gpg-agent / scdaemon に署名させる。
+//! 2. root 専用の一時 homedir に信頼した鍵を取り込み、カードを確認する。
+//! 3. PIN を PAM の会話で聞き、root の gpg-agent / scdaemon に署名させる。
 //! 4. root 側の一時 keyring に取り込んだ信頼した公開鍵で検証する。
 //!
 //! 成功以外は `PAM_IGNORE` を返し、`auth include system-auth` などの
@@ -104,7 +104,7 @@ unsafe fn authenticate_inner(
     // SAFETY: getuid は引数を取らない。
     let uid = unsafe { libc::getuid() };
     if uid == 0 {
-        // root 自身の sudo に YubiKey を要求しない。
+        // root 自身の sudo に OpenPGP カードを要求しない。
         return PAM_IGNORE;
     }
 
@@ -122,7 +122,7 @@ unsafe fn authenticate_inner(
         pam_ffi::log(
             LogLevel::Warning,
             &format!(
-                "pam_nekonolock: {} は sudo の YubiKey 認証を許可されていない",
+                "pam_nekonolock: {} は sudo の OpenPGP カード認証を許可されていない",
                 identity.name
             ),
         );
@@ -141,24 +141,85 @@ unsafe fn authenticate_inner(
     };
 
     let timeout = Duration::from_secs(file.sudo.timeout_sec);
+
+    // 署名は root 専用の一時 homedir と gpg-agent で行う。ユーザーの
+    // gpg-agent は同じ uid のプロセスが差し替えられるため、PIN の検証を
+    // 委ねない（ADR-0035）。agent はキャッシュを使わず、カードの VERIFY
+    // 状態も署名前に落とす。
+    let signer_dir = match tempfile::Builder::new()
+        .prefix("nekonolock-sudo-sign-")
+        .tempdir_in("/run")
+    {
+        Ok(dir) => dir,
+        Err(err) => {
+            pam_ffi::log(
+                LogLevel::Error,
+                &format!("pam_nekonolock: 署名用ディレクトリを作れない: {err}"),
+            );
+            return PAM_IGNORE;
+        }
+    };
+    if let Err(err) = write_agent_config(signer_dir.path()) {
+        pam_ffi::log(
+            LogLevel::Error,
+            &format!("pam_nekonolock: agent の設定を書けない: {err}"),
+        );
+        return PAM_IGNORE;
+    }
     let signer = GpgCard::new(&file.sudo.key, timeout)
+        .with_program(GPG_PATH)
+        .with_homedir(signer_dir.path())
+        .with_no_options(true)
+        .with_scrubbed_env(true)
+        .with_full_root(true)
+        .with_flush_agent(false);
+    let _agent = AgentGuard(&signer);
+    if let Err(err) = signer.import_key_bytes(&public_key) {
+        pam_ffi::log(
+            LogLevel::Error,
+            &format!("pam_nekonolock: 信頼した鍵を取り込めない: {err}"),
+        );
+        return PAM_IGNORE;
+    }
+
+    // ユーザーの scdaemon がカードを握っていると root の scdaemon が
+    // カードを開けない。止めてから署名する。止められなくても、root 側で
+    // カードが開けなければパスワードへフォールバックする。
+    let user_card = GpgCard::new(&file.sudo.key, timeout)
         .with_program(GPG_PATH)
         .with_identity(identity.clone())
         .with_no_options(true)
         .with_scrubbed_env(true);
+    user_card.kill_scdaemon();
 
-    if !signer.present() {
+    let has_card = signer.card_present();
+    if !has_card && !signer.secret_key_available() {
         if options.debug {
             pam_ffi::log(
                 LogLevel::Info,
-                &format!("pam_nekonolock: {} のカードが見つからない", identity.name),
+                &format!(
+                    "pam_nekonolock: {} のカードも秘密鍵も見つからない",
+                    identity.name
+                ),
             );
         }
         return PAM_IGNORE;
     }
+    let card_state = if has_card {
+        signer.clear_card_pin_state()
+    } else {
+        Ok(())
+    };
+    if let Err(err) = card_state {
+        pam_ffi::log(
+            LogLevel::Error,
+            &format!("pam_nekonolock: カードの PIN 状態を戻せない: {err}"),
+        );
+        return PAM_IGNORE;
+    }
 
     // SAFETY: pamh は libpam が渡した有効なハンドル。
-    let pin = match unsafe { pam_ffi::ask(pamh, "YubiKey PIN (empty for password): ") } {
+    let pin = match unsafe { pam_ffi::ask(pamh, "OpenPGP card PIN (empty for password): ") } {
         Ok(Some(pin)) => pin,
         Ok(None) => {
             // 空 Enter やキャンセルはパスワードへ回す。
@@ -176,7 +237,10 @@ unsafe fn authenticate_inner(
         return PAM_IGNORE;
     }
 
-    let verifier_dir = match tempfile::Builder::new().prefix("nekonolock-pam-").tempdir() {
+    let verifier_dir = match tempfile::Builder::new()
+        .prefix("nekonolock-pam-")
+        .tempdir_in("/run")
+    {
         Ok(dir) => dir,
         Err(err) => {
             pam_ffi::log(
@@ -211,7 +275,7 @@ unsafe fn authenticate_inner(
             pam_ffi::log(
                 LogLevel::Info,
                 &format!(
-                    "pam_nekonolock: {} の sudo を YubiKey で認証した",
+                    "pam_nekonolock: {} の sudo を OpenPGP カードで認証した",
                     identity.name
                 ),
             );
@@ -223,7 +287,7 @@ unsafe fn authenticate_inner(
                 unsafe {
                     pam_ffi::message(
                         pamh,
-                        "YubiKey PIN was rejected. Falling back to password.",
+                        "OpenPGP card PIN was rejected. Falling back to password.",
                         true,
                     );
                 }
@@ -231,7 +295,7 @@ unsafe fn authenticate_inner(
             pam_ffi::log(
                 LogLevel::Warning,
                 &format!(
-                    "pam_nekonolock: {} の YubiKey PIN を拒否した",
+                    "pam_nekonolock: {} の OpenPGP カード PIN を拒否した",
                     identity.name
                 ),
             );
@@ -247,7 +311,7 @@ unsafe fn authenticate_inner(
                 unsafe {
                     pam_ffi::message(
                         pamh,
-                        "YubiKey authentication is unavailable. Falling back to password.",
+                        "OpenPGP card authentication is unavailable. Falling back to password.",
                         true,
                     );
                 }
@@ -275,6 +339,33 @@ impl<'a, S: CardSigner, V: CardSigner> CardSigner for SplitCard<'a, S, V> {
     fn verify(&self, challenge: &[u8], signature: &[u8]) -> Result<bool, CardError> {
         self.verifier.verify(challenge, signature)
     }
+}
+
+/// sudo 用の一時 agent を関数の終わりに止める。
+struct AgentGuard<'a>(&'a GpgCard);
+
+impl Drop for AgentGuard<'_> {
+    fn drop(&mut self) {
+        self.0.kill_agent();
+    }
+}
+
+/// root 専用 agent / scdaemon の設定を書く。
+///
+/// `ignore-cache-for-signing` と TTL 0 で、署名に渡した PIN を必ず使わせる。
+/// pcscd が動いているホストでは scdaemon も pcscd 経由にして、ユーザーの
+/// scdaemon を止めた後にカードを開けるようにする。
+fn write_agent_config(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::write(
+        dir.join("gpg-agent.conf"),
+        "ignore-cache-for-signing\ndefault-cache-ttl 0\nmax-cache-ttl 0\n",
+    )?;
+    if std::path::Path::new("/run/pcscd/pcscd.comm").exists()
+        || std::path::Path::new("/run/pcscd/pcscd.pid").exists()
+    {
+        std::fs::write(dir.join("scdaemon.conf"), "disable-ccid\n")?;
+    }
+    Ok(())
 }
 
 /// SAFETY: `argv` は argc 個の有効な C 文字列へのポインタ配列であること。
